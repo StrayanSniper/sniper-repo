@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addons>
+  <addon id="repository.sniper" name="Sniper Repo" version="1.0.0" provider-name="sniper">
+    <requires>
+      <import addon="xbmc.addon" version="12.0.0" />
+    </requires>
+    <extension point="xbmc.addon.repository" name="Sniper Repo">
+      <dir>
+        <info compressed="false">https://StrayanSniper.github.io/sniper-repo/addons.xml</info>
+        <checksum>https://StrayanSniper.github.io/sniper-repo/addons.xml.md5</checksum>
+        <datadir zip="true">https://StrayanSniper.github.io/sniper-repo/zips/</datadir>
+        <hashes>false</hashes>
+      </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+      <summary lang="en_GB">Sniper Repo</summary>
+      <description lang="en_GB">Sniper Repository — Rugby Streams and more.</description>
+      <platform>all</platform>
+      <assets>
+        <icon>icon.png</icon>
+        <fanart>fanart.jpg</fanart>
+      </assets>
+    </extension>
+  </addon>
+  <addon id="plugin.video.rugbystreams" name="Rugby Streams" version="1.0.0" provider-name="rugbystreams">
+    <requires>
+      <import addon="xbmc.python" version="3.0.0" />
+    </requires>
+    <extension point="xbmc.python.pluginsource" library="default.py">
+      <provides>video</provides>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+      <summary lang="en_GB">Rugby Streams</summary>
+      <description lang="en_GB">Watch live Rugby Union &amp; Rugby League Streams</description>
+      <platform>all</platform>
+      <assets>
+        <icon>icon.png</icon>
+        <fanart>fanart.jpg</fanart>
+      </assets>
+    </extension>
+  </addon>
+</addons>
