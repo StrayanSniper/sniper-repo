@@ -42,6 +42,7 @@ Requirements:  requests  (cloudscraper optional — used if 403/503 encountered)
 
 import re
 import sys
+import os
 import time
 import base64
 import threading
@@ -49,10 +50,16 @@ import http.server
 import subprocess
 import urllib.parse
 
+# Ensure the vendored lib/ folder (bundled with the addon) is on sys.path so
+# that 'requests' and its dependencies are found without any external pip install.
+_lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
+if _lib_dir not in sys.path:
+    sys.path.insert(0, _lib_dir)
+
 try:
     import requests as _requests
 except ImportError:
-    print('[no_chrome] ERROR: requests not installed', file=sys.stderr)
+    print('[no_chrome] ERROR: requests not found (lib/ vendor missing?)', file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -431,11 +438,18 @@ def _call_boanki(embed_vars: dict, iframe_url: str, edm: str) -> str:
 
 def _kodi_running() -> bool:
     try:
-        result = subprocess.run(
-            ['tasklist', '/FI', 'IMAGENAME eq kodi.exe', '/NH'],
-            capture_output=True, text=True
-        )
-        return 'kodi.exe' in result.stdout.lower()
+        if sys.platform == 'win32':
+            result = subprocess.run(
+                ['tasklist', '/FI', 'IMAGENAME eq kodi.exe', '/NH'],
+                capture_output=True, text=True
+            )
+            return 'kodi.exe' in result.stdout.lower()
+        else:
+            result = subprocess.run(
+                ['pgrep', '-x', 'kodi'],
+                capture_output=True
+            )
+            return result.returncode == 0
     except Exception:
         return True
 

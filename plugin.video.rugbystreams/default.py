@@ -10,6 +10,10 @@ then polls a temp file until the extractor writes the proxy URL for the
 import sys
 import os
 import re
+<<<<<<< HEAD
+import signal
+=======
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
 import datetime
 import subprocess
 import tempfile
@@ -51,13 +55,24 @@ HANDLE     = int(sys.argv[1])
 BASE_URL   = sys.argv[0]
 PARAMS     = urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[2]).query)
 
-SYSTEM_PYTHON    = r'C:\Users\surfy\AppData\Local\Programs\Python\Python313\python.exe'
+<<<<<<< HEAD
+if sys.platform == 'win32':
+    _win_py = r'C:\Users\surfy\AppData\Local\Programs\Python\Python313\python.exe'
+    SYSTEM_PYTHON = _win_py if os.path.isfile(_win_py) else sys.executable
+else:
+    SYSTEM_PYTHON = sys.executable
 SITE_URL         = 'https://rugbybox.me/rugby-union-streams'
 TEMP_URL_FILE    = os.path.join(tempfile.gettempdir(), 'rugbystreams.url')
 PID_FILE         = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.pid')
 # no-chrome extractor is tried first; Chrome extractor used as fallback
 EXTRACTOR_NO_CHROME = os.path.join(ADDON_DIR, 'extractor_runner_no_chrome.py')
 EXTRACTOR_CHROME    = os.path.join(ADDON_DIR, 'extractor_runner.py')
+=======
+SYSTEM_PYTHON = r'C:\Users\surfy\AppData\Local\Programs\Python\Python313\python.exe'
+SITE_URL      = 'https://rugbybox.me/rugby-union-streams'
+TEMP_URL_FILE = os.path.join(tempfile.gettempdir(), 'rugbystreams.url')
+PID_FILE      = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.pid')
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
 
 HEADERS = {
     'User-Agent': (
@@ -159,14 +174,18 @@ def list_matches():
 # Playback
 # ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 def _launch_extractor(extractor_script, match_url, log_path):
     """Start an extractor subprocess, return the Popen object."""
     log_file = open(log_path, 'w')
+    kwargs = {}
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(
         [SYSTEM_PYTHON, extractor_script, match_url, TEMP_URL_FILE],
         stdout=log_file,
         stderr=log_file,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        **kwargs,
     )
     return proc
 
@@ -208,20 +227,36 @@ def _poll_for_url(proc, dialog, timeout_ms, progress_start, progress_end, label)
 
 
 def play_stream(match_url):
+=======
+def play_stream(match_url):
+    extractor = os.path.join(ADDON_DIR, 'extractor_runner.py')
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
     xbmc.log(f'[rugbystreams] play_stream: {match_url}', xbmc.LOGINFO)
 
     # Kill any previous extractor process (it holds port 19823)
     try:
         with open(PID_FILE, 'r') as f:
             old_pid = int(f.read().strip())
+<<<<<<< HEAD
+        if sys.platform == 'win32':
+            kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW}
+            subprocess.call(['taskkill', '/PID', str(old_pid), '/F', '/T'], **kwargs)
+        else:
+            os.kill(old_pid, signal.SIGTERM)
+=======
         subprocess.call(
             ['taskkill', '/PID', str(old_pid), '/F', '/T'],
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
         xbmc.log(f'[rugbystreams] killed old extractor pid={old_pid}', xbmc.LOGINFO)
     except Exception:
         pass
 
+<<<<<<< HEAD
+=======
+    # Remove any stale URL file from a previous session
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
     try:
         os.remove(TEMP_URL_FILE)
     except OSError:
@@ -231,6 +266,7 @@ def play_stream(match_url):
     dialog.create('Rugby Streams', 'Loading stream...')
     dialog.update(5)
 
+<<<<<<< HEAD
     log_path = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.log')
     stream_url = None
 
@@ -238,11 +274,24 @@ def play_stream(match_url):
     try:
         proc = _launch_extractor(EXTRACTOR_NO_CHROME, match_url, log_path)
         xbmc.log(f'[rugbystreams] no-chrome extractor pid={proc.pid}', xbmc.LOGINFO)
+=======
+    try:
+        log_path = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.log')
+        log_file = open(log_path, 'w')
+        proc = subprocess.Popen(
+            [SYSTEM_PYTHON, extractor, match_url, TEMP_URL_FILE],
+            stdout=log_file,
+            stderr=log_file,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        xbmc.log(f'[rugbystreams] extractor pid={proc.pid}', xbmc.LOGINFO)
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
         try:
             with open(PID_FILE, 'w') as f:
                 f.write(str(proc.pid))
         except Exception:
             pass
+<<<<<<< HEAD
 
         stream_url, cancelled = _poll_for_url(
             proc, dialog,
@@ -293,6 +342,58 @@ def play_stream(match_url):
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
             return
 
+=======
+    except Exception as exc:
+        dialog.close()
+        xbmc.log(f'[rugbystreams] Popen failed: {exc}', xbmc.LOGERROR)
+        xbmcgui.Dialog().notification(
+            'Rugby Streams', f'Could not start extractor: {exc}',
+            xbmcgui.NOTIFICATION_ERROR, 5000
+        )
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
+
+    # Poll the temp file until the extractor writes the 720p CDN URL.
+    # xbmc.sleep() yields to Kodi so the script stays alive.
+    timeout_ms = 60000
+    elapsed_ms = 0
+    poll_ms    = 500
+    stream_url = None
+
+    while elapsed_ms < timeout_ms:
+        if dialog.iscanceled():
+            proc.kill()
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            return
+
+        try:
+            with open(TEMP_URL_FILE, 'r') as f:
+                url = f.read().strip()
+            if url:
+                stream_url = url
+                break
+        except OSError:
+            pass  # file not written yet
+
+        if proc.poll() is not None:
+            xbmc.log(f'[rugbystreams] extractor exited rc={proc.returncode}',
+                     xbmc.LOGWARNING)
+            # Read one final time in case the file was written just before exit
+            try:
+                with open(TEMP_URL_FILE, 'r') as f:
+                    url = f.read().strip()
+                if url:
+                    stream_url = url
+            except OSError:
+                pass
+            break
+
+        xbmc.sleep(poll_ms)
+        elapsed_ms += poll_ms
+        progress = min(90, 5 + int(elapsed_ms / timeout_ms * 85))
+        dialog.update(progress, f'Extracting stream... ({elapsed_ms // 1000}s)')
+
+>>>>>>> a00c6e5ac36e621520ecd8f979493e2d097f134d
     dialog.close()
     xbmc.log(f'[rugbystreams] stream_url={stream_url}', xbmc.LOGINFO)
 

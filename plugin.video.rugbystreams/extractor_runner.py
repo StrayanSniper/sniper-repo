@@ -18,12 +18,18 @@ Strategy
 
 import re
 import sys
+import os
 import time
 import subprocess
 import threading
 import http.server
 import urllib.parse
 import urllib.request
+
+# Ensure the vendored lib/ folder (bundled with the addon) is on sys.path.
+_lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
+if _lib_dir not in sys.path:
+    sys.path.insert(0, _lib_dir)
 
 import requests as _requests
 
