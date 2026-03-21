@@ -13,7 +13,6 @@ import re
 import signal
 import datetime
 import subprocess
-import tempfile
 import urllib.parse
 import urllib.request
 import html.parser
@@ -45,6 +44,7 @@ import xbmc
 import xbmcgui
 import xbmcplugin
 import xbmcaddon
+import xbmcvfs
 
 ADDON      = xbmcaddon.Addon()
 ADDON_DIR  = ADDON.getAddonInfo('path')
@@ -58,8 +58,9 @@ if sys.platform == 'win32':
 else:
     SYSTEM_PYTHON = sys.executable
 SITE_URL         = 'https://rugbybox.me/rugby-union-streams'
-TEMP_URL_FILE    = os.path.join(tempfile.gettempdir(), 'rugbystreams.url')
-PID_FILE         = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.pid')
+_KODI_TEMP       = xbmcvfs.translatePath('special://temp/')
+TEMP_URL_FILE    = os.path.join(_KODI_TEMP, 'rugbystreams.url')
+PID_FILE         = os.path.join(_KODI_TEMP, 'rugbystreams_extractor.pid')
 # no-chrome extractor is tried first; Chrome extractor used as fallback
 EXTRACTOR_NO_CHROME = os.path.join(ADDON_DIR, 'extractor_runner_no_chrome.py')
 EXTRACTOR_CHROME    = os.path.join(ADDON_DIR, 'extractor_runner.py')
@@ -239,7 +240,7 @@ def play_stream(match_url):
     dialog.create('Rugby Streams', 'Loading stream...')
     dialog.update(5)
 
-    log_path = os.path.join(tempfile.gettempdir(), 'rugbystreams_extractor.log')
+    log_path = os.path.join(_KODI_TEMP, 'rugbystreams_extractor.log')
     stream_url = None
 
     # --- Try 1: no-chrome static extractor (fast, no Chrome dependency) ---
