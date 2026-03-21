@@ -2,17 +2,16 @@
 plugin.video.rugbystreams - default.py
 Kodi plugin entry point (runs under Kodi's Python).
 Scrapes rugbybox.me/rugby-union-streams to show a list of matches.
-When a match is selected, spawns extractor_runner.py under system Python,
-then polls a temp file until the extractor writes the proxy URL for the
-720p stream, then calls setResolvedUrl.
+When a match is selected, runs the stream extractor in a background thread
+(in-process — no subprocess), then polls a temp file until the extractor
+writes the proxy URL, then calls setResolvedUrl.
 """
 
 import sys
 import os
 import re
-import signal
 import datetime
-import subprocess
+import threading
 import urllib.parse
 import urllib.request
 import html.parser
@@ -52,18 +51,14 @@ HANDLE     = int(sys.argv[1])
 BASE_URL   = sys.argv[0]
 PARAMS     = urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[2]).query)
 
-if sys.platform == 'win32':
-    _win_py = r'C:\Users\surfy\AppData\Local\Programs\Python\Python313\python.exe'
-    SYSTEM_PYTHON = _win_py if os.path.isfile(_win_py) else sys.executable
-else:
-    SYSTEM_PYTHON = sys.executable
-SITE_URL         = 'https://rugbybox.me/rugby-union-streams'
-_KODI_TEMP       = xbmcvfs.translatePath('special://temp/')
-TEMP_URL_FILE    = os.path.join(_KODI_TEMP, 'rugbystreams.url')
-PID_FILE         = os.path.join(_KODI_TEMP, 'rugbystreams_extractor.pid')
-# no-chrome extractor is tried first; Chrome extractor used as fallback
-EXTRACTOR_NO_CHROME = os.path.join(ADDON_DIR, 'extractor_runner_no_chrome.py')
-EXTRACTOR_CHROME    = os.path.join(ADDON_DIR, 'extractor_runner.py')
+SITE_URL      = 'https://rugbybox.me/rugby-union-streams'
+_KODI_TEMP    = xbmcvfs.translatePath('special://temp/')
+TEMP_URL_FILE = os.path.join(_KODI_TEMP, 'rugbystreams.url')
+
+# Import the extractor in-process — no subprocess, works on Android/Firestick
+if ADDON_DIR not in sys.path:
+    sys.path.insert(0, ADDON_DIR)
+import extractor_runner_no_chrome as _extractor
 
 HEADERS = {
     'User-Agent': (
@@ -165,31 +160,15 @@ def list_matches():
 # Playback
 # ---------------------------------------------------------------------------
 
-def _launch_extractor(extractor_script, match_url, log_path):
-    """Start an extractor subprocess, return the Popen object."""
-    log_file = open(log_path, 'w')
-    kwargs = {}
-    if sys.platform == 'win32':
-        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-    proc = subprocess.Popen(
-        [SYSTEM_PYTHON, extractor_script, match_url, TEMP_URL_FILE],
-        stdout=log_file,
-        stderr=log_file,
-        **kwargs,
-    )
-    return proc
-
-
-def _poll_for_url(proc, dialog, timeout_ms, progress_start, progress_end, label):
+def _poll_for_url(thread, dialog, timeout_ms=60000):
     """
-    Poll TEMP_URL_FILE until the extractor writes a URL or times out.
+    Poll TEMP_URL_FILE until the extractor thread writes a URL or finishes.
     Returns (stream_url_or_None, cancelled_bool).
     """
     poll_ms    = 500
     elapsed_ms = 0
     while elapsed_ms < timeout_ms:
         if dialog.iscanceled():
-            proc.kill()
             return None, True
         try:
             with open(TEMP_URL_FILE, 'r') as f:
@@ -198,8 +177,8 @@ def _poll_for_url(proc, dialog, timeout_ms, progress_start, progress_end, label)
                 return url, False
         except OSError:
             pass
-        if proc.poll() is not None:
-            xbmc.log(f'[rugbystreams] {label} exited rc={proc.returncode}', xbmc.LOGWARNING)
+        if not thread.is_alive():
+            # Thread finished — do one final read in case the write just landed
             try:
                 with open(TEMP_URL_FILE, 'r') as f:
                     url = f.read().strip()
@@ -207,29 +186,19 @@ def _poll_for_url(proc, dialog, timeout_ms, progress_start, progress_end, label)
                     return url, False
             except OSError:
                 pass
-            return None, False   # exited without writing URL
+            return None, False
         xbmc.sleep(poll_ms)
         elapsed_ms += poll_ms
-        progress = min(progress_end, progress_start + int(elapsed_ms / timeout_ms * (progress_end - progress_start)))
-        dialog.update(progress, f'{label}... ({elapsed_ms // 1000}s)')
+        progress = min(90, 5 + int(elapsed_ms / timeout_ms * 85))
+        dialog.update(progress, f'Extracting stream... ({elapsed_ms // 1000}s)')
     return None, False
 
 
 def play_stream(match_url):
     xbmc.log(f'[rugbystreams] play_stream: {match_url}', xbmc.LOGINFO)
 
-    # Kill any previous extractor process (it holds port 19823)
-    try:
-        with open(PID_FILE, 'r') as f:
-            old_pid = int(f.read().strip())
-        if sys.platform == 'win32':
-            kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW}
-            subprocess.call(['taskkill', '/PID', str(old_pid), '/F', '/T'], **kwargs)
-        else:
-            os.kill(old_pid, signal.SIGTERM)
-        xbmc.log(f'[rugbystreams] killed old extractor pid={old_pid}', xbmc.LOGINFO)
-    except Exception:
-        pass
+    # Shut down any proxy left running from a previous playback
+    _extractor.shutdown_proxy()
 
     try:
         os.remove(TEMP_URL_FILE)
@@ -240,80 +209,27 @@ def play_stream(match_url):
     dialog.create('Rugby Streams', 'Loading stream...')
     dialog.update(5)
 
-    log_path = os.path.join(_KODI_TEMP, 'rugbystreams_extractor.log')
-    stream_url = None
-
-    # --- Try 1: no-chrome static extractor (fast, no Chrome dependency) ---
-    try:
-        proc = _launch_extractor(EXTRACTOR_NO_CHROME, match_url, log_path)
-        xbmc.log(f'[rugbystreams] no-chrome extractor pid={proc.pid}', xbmc.LOGINFO)
+    def _run():
         try:
-            with open(PID_FILE, 'w') as f:
-                f.write(str(proc.pid))
-        except Exception:
-            pass
-
-        stream_url, cancelled = _poll_for_url(
-            proc, dialog,
-            timeout_ms=45000,
-            progress_start=5, progress_end=50,
-            label='Extracting (fast)'
-        )
-        if cancelled:
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-            return
-    except Exception as exc:
-        xbmc.log(f'[rugbystreams] no-chrome extractor failed to start: {exc}', xbmc.LOGWARNING)
-
-    # --- Try 2: Chrome/Selenium extractor (fallback if static failed) -----
-    if not stream_url:
-        xbmc.log('[rugbystreams] static extractor found no URL — falling back to Chrome',
-                 xbmc.LOGINFO)
-        try:
-            os.remove(TEMP_URL_FILE)
-        except OSError:
-            pass
-        dialog.update(50, 'Trying Chrome fallback...')
-        try:
-            proc = _launch_extractor(EXTRACTOR_CHROME, match_url, log_path)
-            xbmc.log(f'[rugbystreams] Chrome extractor pid={proc.pid}', xbmc.LOGINFO)
-            try:
-                with open(PID_FILE, 'w') as f:
-                    f.write(str(proc.pid))
-            except Exception:
-                pass
-
-            stream_url, cancelled = _poll_for_url(
-                proc, dialog,
-                timeout_ms=60000,
-                progress_start=50, progress_end=95,
-                label='Extracting (Chrome)'
-            )
-            if cancelled:
-                xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-                return
+            _extractor.extract(match_url, TEMP_URL_FILE)
         except Exception as exc:
-            dialog.close()
-            xbmc.log(f'[rugbystreams] Chrome extractor failed to start: {exc}', xbmc.LOGERROR)
-            xbmcgui.Dialog().notification(
-                'Rugby Streams', f'Could not start extractor: {exc}',
-                xbmcgui.NOTIFICATION_ERROR, 5000
-            )
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-            return
+            xbmc.log(f'[rugbystreams] extractor error: {exc}', xbmc.LOGERROR)
 
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    stream_url, cancelled = _poll_for_url(t, dialog)
     dialog.close()
-    xbmc.log(f'[rugbystreams] stream_url={stream_url}', xbmc.LOGINFO)
+
+    if cancelled:
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
 
     if not stream_url:
         xbmcgui.Dialog().notification(
             'Rugby Streams', 'Stream not found — check Kodi log for details',
             xbmcgui.NOTIFICATION_ERROR, 6000
         )
-        try:
-            proc.kill()
-        except Exception:
-            pass
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
 

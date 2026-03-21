@@ -2,7 +2,12 @@
 extractor_runner_no_chrome.py — Chrome-free casthill.net stream extractor
 for rugbybox.me.  Uses plain HTTP requests instead of headless Chrome.
 
-Usage: python extractor_runner_no_chrome.py <match_page_url> <temp_file_path>
+Can be run standalone (CLI):
+    python extractor_runner_no_chrome.py <match_page_url> <temp_file_path>
+
+Or imported and called in-process (Kodi on Android / any platform):
+    import extractor_runner_no_chrome as extractor
+    extractor.extract(match_url, temp_file_path)   # call from a daemon thread
 
 How casthill.net/rugbybox.me streams work (reverse-engineered)
 -------------------------------------------------------------
@@ -35,7 +40,7 @@ How casthill.net/rugbybox.me streams work (reverse-engineered)
 
 7.  Start local HTTP proxy on port 19823.  Proxy rewrites segment and AES key
     URLs so Kodi can fetch them with the right Referer header.
-    Write proxy URL to <temp_file_path>.  Keep proxy alive up to 2 hours.
+    Write proxy URL to <temp_file_path>.
 
 Requirements:  requests  (cloudscraper optional — used if 403/503 encountered)
 """
@@ -47,7 +52,6 @@ import time
 import base64
 import threading
 import http.server
-import subprocess
 import urllib.parse
 
 # Ensure the vendored lib/ folder (bundled with the addon) is on sys.path so
@@ -104,6 +108,23 @@ _seg_cache_lock = threading.Lock()
 
 _playlist_cache      = {'text': None, 'expires': 0.0}
 _playlist_cache_lock = threading.Lock()
+
+_proxy_server = None   # current running server instance; replaced on each extract()
+
+
+# ---------------------------------------------------------------------------
+# Proxy lifecycle
+# ---------------------------------------------------------------------------
+
+def shutdown_proxy():
+    """Shut down the proxy server if one is running. Safe to call at any time."""
+    global _proxy_server
+    if _proxy_server is not None:
+        try:
+            _proxy_server.shutdown()
+        except Exception:
+            pass
+        _proxy_server = None
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +214,7 @@ def _best_variant_url(master_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# HLS Proxy  (identical to extractor_runner.py)
+# HLS Proxy
 # ---------------------------------------------------------------------------
 
 def _fake_master(proxy_base: str) -> bytes:
@@ -433,50 +454,35 @@ def _call_boanki(embed_vars: dict, iframe_url: str, edm: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Process helpers
-# ---------------------------------------------------------------------------
-
-def _kodi_running() -> bool:
-    try:
-        if sys.platform == 'win32':
-            result = subprocess.run(
-                ['tasklist', '/FI', 'IMAGENAME eq kodi.exe', '/NH'],
-                capture_output=True, text=True
-            )
-            return 'kodi.exe' in result.stdout.lower()
-        else:
-            result = subprocess.run(
-                ['pgrep', '-x', 'kodi'],
-                capture_output=True
-            )
-            return result.returncode == 0
-    except Exception:
-        return True
-
-
-# ---------------------------------------------------------------------------
 # Main extraction entry point
 # ---------------------------------------------------------------------------
 
 def extract(match_url: str, temp_file: str):
-    global _cdn_media_url, _cdn_base
+    """
+    Extract the stream URL for match_url, start the local HLS proxy, and
+    write the proxy playlist URL to temp_file.
+
+    Raises RuntimeError on any extraction failure (so the caller — a Kodi
+    plugin thread — can catch it without calling sys.exit and killing Kodi).
+    """
+    global _cdn_media_url, _cdn_base, _proxy_server
+
+    # Shut down any proxy left running from a previous playback session
+    shutdown_proxy()
 
     # ---- Step 1: fetch rugbybox.me match page ----------------------------
     print(f'[extractor] Fetching match page: {match_url}', file=sys.stderr, flush=True)
     page_sess = _build_scrape_session('https://rugbybox.me/')
     html_page, status = _fetch(page_sess, match_url)
     if not html_page or status != 200:
-        print(f'[extractor] ERROR: match page returned {status}', file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise RuntimeError(f'match page returned HTTP {status}')
 
     # ---- Step 2: extract casthill embed config from match page -----------
     zmid_m = re.search(r'zmid\s*=\s*"([^"]+)"', html_page)
     pid_m  = re.search(r'\bpid\s*=\s*(\d+)', html_page)
     edm_m  = re.search(r'edm\s*=\s*"([^"]+)"', html_page)
     if not (zmid_m and pid_m and edm_m):
-        print('[extractor] ERROR: casthill embed config not found in match page',
-              file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise RuntimeError('casthill embed config not found in match page')
 
     zmid     = zmid_m.group(1)
     pid      = pid_m.group(1)
@@ -489,8 +495,7 @@ def extract(match_url: str, temp_file: str):
     csrf_raw = re.search(r'"csrf":\s*"([^"]+)"', html_page)
     csrf_ip  = re.search(r'"csrf_ip":\s*"([^"]+)"', html_page)
     if not (csrf_raw and csrf_ip):
-        print('[extractor] ERROR: siteConfig CSRF not found', file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise RuntimeError('siteConfig CSRF not found in match page')
 
     # ---- Step 3: fetch casthill.net embed page ---------------------------
     embed_qs = urllib.parse.urlencode({
@@ -503,25 +508,16 @@ def extract(match_url: str, temp_file: str):
     embed_sess = _build_scrape_session(match_url)
     html_embed, status = _fetch(embed_sess, iframe_url, referer=match_url)
     if not html_embed or status != 200:
-        print(f'[extractor] ERROR: embed page returned {status}', file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise RuntimeError(f'embed page returned HTTP {status}')
 
     # ---- Step 4: extract embed vars (videoSource, sCode, etc.) ----------
-    try:
-        ev = _extract_embed_vars(html_embed)
-    except ValueError as e:
-        print(f'[extractor] ERROR: {e}', file=sys.stderr, flush=True)
-        sys.exit(1)
+    ev = _extract_embed_vars(html_embed)  # raises ValueError on failure
 
     print(f'[extractor] urlSource: {ev["url_source"][:80]}', file=sys.stderr, flush=True)
     print(f'[extractor] edgeHost:  {ev["edge_host"]}', file=sys.stderr, flush=True)
 
     # ---- Step 5: call boanki.net to register session with CDN ------------
-    try:
-        device_id = _call_boanki(ev, iframe_url, edm)
-    except Exception as e:
-        print(f'[extractor] ERROR: boanki.net call failed: {e}', file=sys.stderr, flush=True)
-        sys.exit(1)
+    device_id = _call_boanki(ev, iframe_url, edm)  # raises RuntimeError on failure
 
     # ---- Step 6: update CDN session headers with correct Referer ---------
     _cdn_session.headers.update({
@@ -533,11 +529,7 @@ def extract(match_url: str, temp_file: str):
     master_url = ev['url_source'] + f'?u_id={device_id}'
     print(f'[extractor] Fetching master: {master_url[:80]}...', file=sys.stderr, flush=True)
 
-    try:
-        media_url = _best_variant_url(master_url)
-    except Exception as e:
-        print(f'[extractor] ERROR: master fetch failed: {e}', file=sys.stderr, flush=True)
-        sys.exit(1)
+    media_url = _best_variant_url(master_url)  # raises on network failure
 
     print(f'[extractor] Media playlist: {media_url[:80]}', file=sys.stderr, flush=True)
 
@@ -545,24 +537,16 @@ def extract(match_url: str, temp_file: str):
     _cdn_base      = _base_of(media_url)
 
     # ---- Step 8: start local proxy ---------------------------------------
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', PROXY_PORT), _ProxyHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _proxy_server = http.server.ThreadingHTTPServer(('127.0.0.1', PROXY_PORT), _ProxyHandler)
+    threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
     print(f'[extractor] Proxy on port {PROXY_PORT}', file=sys.stderr, flush=True)
 
     proxy_url = f'http://127.0.0.1:{PROXY_PORT}/playlist.m3u8'
     with open(temp_file, 'w') as f:
         f.write(proxy_url)
     print(f'[extractor] Written {proxy_url}', file=sys.stderr, flush=True)
-
-    # ---- Step 9: stay alive while Kodi is playing -----------------------
-    deadline = time.time() + PROXY_TIMEOUT
-    while time.time() < deadline:
-        time.sleep(5)
-        if not _kodi_running():
-            print('[extractor] Kodi exited — shutting down', file=sys.stderr, flush=True)
-            break
-
-    server.shutdown()
+    # Proxy runs as daemon threads — no keep-alive loop needed when in-process.
+    # When called from main() the keep-alive is handled there.
 
 
 def main():
@@ -570,7 +554,19 @@ def main():
         print('Usage: extractor_runner_no_chrome.py <match_url> <temp_file>',
               file=sys.stderr)
         sys.exit(1)
-    extract(sys.argv[1], sys.argv[2])
+    try:
+        extract(sys.argv[1], sys.argv[2])
+    except Exception as exc:
+        print(f'[extractor] FATAL: {exc}', file=sys.stderr, flush=True)
+        sys.exit(1)
+    # Keep the process alive so the proxy daemon threads keep serving
+    deadline = time.time() + PROXY_TIMEOUT
+    try:
+        while time.time() < deadline:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    shutdown_proxy()
 
 
 if __name__ == '__main__':
