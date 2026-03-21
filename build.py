@@ -7,15 +7,17 @@ It will:
   1. Zip each addon folder into zips/<addon_id>/<addon_id>-<version>.zip
   2. Regenerate addons.xml from all addon.xml files
   3. Regenerate addons.xml.md5
+  4. Regenerate index.html files for root, zips/, and each zips/<addon_id>/
 
 Usage:
     python build.py
 """
 
+import datetime
 import hashlib
-import os
-import re
+import html
 import sys
+import urllib.parse
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -39,6 +41,10 @@ EXCLUDE_PATTERNS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _addon_version(addon_dir: Path) -> str:
     tree = ET.parse(addon_dir / 'addon.xml')
     return tree.getroot().attrib['version']
@@ -50,6 +56,53 @@ def _should_exclude(path: Path) -> bool:
             return True
     return False
 
+
+def _fmt_size(n: int) -> str:
+    return str(n)
+
+
+def _fmt_date(ts: float) -> str:
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime('%d-%b-%Y %H:%M')
+
+
+def _index_html(title: str, parent_href: str | None, entries: list[tuple[str, str, str, str]]) -> str:
+    """
+    Build an Apache-style index page.
+
+    entries: list of (href, display_name, date_str, size_str)
+             size_str='' for directories
+    """
+    lines = []
+    lines.append('<!DOCTYPE html>')
+    lines.append('<html>')
+    lines.append('<head>')
+    lines.append(f'  <title>Index of {html.escape(title)}</title>')
+    lines.append('</head>')
+    lines.append('<body>')
+    lines.append(f'<h1>Index of {html.escape(title)}</h1>')
+    lines.append('<hr>')
+    lines.append('<pre>')
+    if parent_href is not None:
+        lines.append(f'<a href="{parent_href}">../</a>')
+    for href, name, date, size in entries:
+        encoded_href = urllib.parse.quote(href, safe='./-')
+        display = html.escape(name)
+        # pad name column to 55 chars
+        padded = f'<a href="{encoded_href}">{display}</a>'
+        # calculate visible length (name only, no tags)
+        vis_len = len(name)
+        pad = max(1, 55 - vis_len)
+        lines.append(f'{padded}{" " * pad}{date}  {size}')
+    lines.append('</pre>')
+    lines.append('<hr>')
+    lines.append('</body>')
+    lines.append('</html>')
+    return '\n'.join(lines) + '\n'
+
+
+# ---------------------------------------------------------------------------
+# Build steps
+# ---------------------------------------------------------------------------
 
 def build_zip(addon_dir: Path) -> Path:
     addon_id = addon_dir.name
@@ -93,6 +146,61 @@ def build_addons_xml():
     print(f'  wrote   addons.xml.md5  ({md5})')
 
 
+def build_indexes():
+    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+
+    # --- root index.html ---
+    root_entries = []
+    # addons.xml
+    p = REPO_ROOT / 'addons.xml'
+    if p.exists():
+        s = p.stat()
+        root_entries.append(('addons.xml', 'addons.xml', _fmt_date(s.st_mtime), _fmt_size(s.st_size)))
+    # addons.xml.md5
+    p = REPO_ROOT / 'addons.xml.md5'
+    if p.exists():
+        s = p.stat()
+        root_entries.append(('addons.xml.md5', 'addons.xml.md5', _fmt_date(s.st_mtime), _fmt_size(s.st_size)))
+    # zips/ dir link
+    root_entries.append(('zips/', 'zips/', _fmt_date(now_ts), ''))
+
+    (REPO_ROOT / 'index.html').write_text(
+        _index_html('/sniper-repo/', None, root_entries),
+        encoding='utf-8'
+    )
+    print('  wrote   index.html')
+
+    # --- zips/ index.html ---
+    zips_entries = []
+    for addon_id in ADDON_DIRS:
+        zips_entries.append((f'{addon_id}/', f'{addon_id}/', _fmt_date(now_ts), ''))
+
+    (ZIPS_DIR / 'index.html').write_text(
+        _index_html('/sniper-repo/zips/', '../', zips_entries),
+        encoding='utf-8'
+    )
+    print('  wrote   zips/index.html')
+
+    # --- zips/<addon_id>/ index.html ---
+    for addon_id in ADDON_DIRS:
+        subdir = ZIPS_DIR / addon_id
+        if not subdir.is_dir():
+            continue
+        entries = []
+        for zp in sorted(subdir.glob('*.zip')):
+            s = zp.stat()
+            entries.append((zp.name, zp.name, _fmt_date(s.st_mtime), _fmt_size(s.st_size)))
+        (subdir / 'index.html').write_text(
+            _index_html(f'/sniper-repo/zips/{addon_id}/', '../', entries),
+            encoding='utf-8'
+        )
+        print(f'  wrote   zips/{addon_id}/index.html')
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     print('Building Sniper Repo...')
     for addon_id in ADDON_DIRS:
@@ -104,6 +212,10 @@ def main():
 
     print('Generating addons.xml / addons.xml.md5...')
     build_addons_xml()
+
+    print('Generating index.html files...')
+    build_indexes()
+
     print('Done.')
 
 
