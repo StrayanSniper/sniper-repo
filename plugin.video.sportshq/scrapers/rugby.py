@@ -265,3 +265,13 @@ def play_stream(handle, match_url):
     li.setProperty('inputstream.ffmpegdirect.open_timeout', '30')
     xbmcplugin.setResolvedUrl(handle, True, li)
 
+    # Keep script alive while playing so proxy daemon threads stay alive
+    player  = xbmc.Player()
+    monitor = xbmc.Monitor()
+    timeout = 0
+    while not player.isPlaying() and timeout < 20 and not monitor.abortRequested():
+        xbmc.sleep(500)
+        timeout += 1
+    while player.isPlaying() and not monitor.abortRequested():
+        xbmc.sleep(1000)
+

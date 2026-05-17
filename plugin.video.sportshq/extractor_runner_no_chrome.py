@@ -37,7 +37,7 @@ UA = (
 )
 
 PLAYLIST_TTL   = 2.0
-PREFETCH_COUNT = 4   # segments to pre-fetch ahead of current position
+PREFETCH_COUNT = 6   # segments to pre-fetch ahead of current position
 
 # ---------------------------------------------------------------------------
 # Proxy state  (module-level so daemon threads can access it)

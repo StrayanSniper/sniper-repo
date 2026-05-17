@@ -265,6 +265,18 @@ def play_stream(match_url):
     li.setProperty('inputstream.ffmpegdirect.open_timeout', '30')
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
+    # Keep this script alive while the video plays so the proxy daemon
+    # threads stay alive. Without this Kodi kills the script (and proxy)
+    # after a few minutes.
+    player  = xbmc.Player()
+    monitor = xbmc.Monitor()
+    timeout = 0
+    while not player.isPlaying() and timeout < 20 and not monitor.abortRequested():
+        xbmc.sleep(500)
+        timeout += 1
+    while player.isPlaying() and not monitor.abortRequested():
+        xbmc.sleep(1000)
+
 
 # ---------------------------------------------------------------------------
 # Router
