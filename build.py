@@ -40,6 +40,9 @@ EXCLUDE_PATTERNS = {
     'out.txt', 'out2.txt', 'err.txt', 'err2.txt',
 }
 
+# File extensions to exclude (platform-specific compiled files)
+EXCLUDE_EXTENSIONS = {'.pyd', '.exe', '.pdb'}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,6 +57,8 @@ def _should_exclude(path: Path) -> bool:
     for part in path.parts:
         if part in EXCLUDE_PATTERNS:
             return True
+    if path.suffix.lower() in EXCLUDE_EXTENSIONS:
+        return True
     return False
 
 

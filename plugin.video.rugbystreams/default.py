@@ -88,8 +88,9 @@ class MatchParser(html.parser.HTMLParser):
             return
         attrs = dict(attrs)
         href  = attrs.get('href', '')
-        if (href and href.startswith('/') and href.endswith('-stream')
-                and href.count('/') == 2):
+        if (href and href.startswith('/')
+                and href.count('/') >= 2
+                and (href.endswith('-stream') or re.search(r'/stream-\d+$', href))):
             self._current_href  = 'https://rugbybox.me' + href
             self._current_title = ''
             self._capture       = True
@@ -209,10 +210,13 @@ def play_stream(match_url):
     dialog.create('Rugby Streams', 'Loading stream...')
     dialog.update(5)
 
+    error_holder = [None]
+
     def _run():
         try:
             _extractor.extract(match_url, TEMP_URL_FILE)
         except Exception as exc:
+            error_holder[0] = str(exc)
             xbmc.log(f'[rugbystreams] extractor error: {exc}', xbmc.LOGERROR)
 
     t = threading.Thread(target=_run, daemon=True)
@@ -226,9 +230,11 @@ def play_stream(match_url):
         return
 
     if not stream_url:
+        msg = error_holder[0] or 'Stream not found'
+        if 'embed config not found' in msg:
+            msg = 'Stream not live yet — no embed found on match page'
         xbmcgui.Dialog().notification(
-            'Rugby Streams', 'Stream not found — check Kodi log for details',
-            xbmcgui.NOTIFICATION_ERROR, 6000
+            'Rugby Streams', msg, xbmcgui.NOTIFICATION_ERROR, 7000
         )
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return

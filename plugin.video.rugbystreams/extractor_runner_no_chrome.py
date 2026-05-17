@@ -45,6 +45,8 @@ How casthill.net/rugbybox.me streams work (reverse-engineered)
 Requirements:  requests  (cloudscraper optional — used if 403/503 encountered)
 """
 
+from __future__ import annotations
+
 import re
 import sys
 import os
@@ -359,7 +361,9 @@ def _fetch(session, url: str, referer: str = '', **kwargs) -> tuple[str, int]:
                 pass
         return raw.decode('utf-8', errors='replace'), r.status_code
     except Exception as exc:
+        import traceback
         print(f'[extractor] fetch error {url}: {exc}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         return '', 0
 
 
@@ -482,7 +486,27 @@ def extract(match_url: str, temp_file: str):
     pid_m  = re.search(r'\bpid\s*=\s*(\d+)', html_page)
     edm_m  = re.search(r'edm\s*=\s*"([^"]+)"', html_page)
     if not (zmid_m and pid_m and edm_m):
-        raise RuntimeError('casthill embed config not found in match page')
+        # Match page has no embed — look for stream sub-page links
+        # e.g. /match-live/nrl/stream-1, /match-live/nrl/stream-2
+        sub_links = re.findall(r'href="(/[^"]+/stream-\d+)"', html_page)
+        sub_links += re.findall(r"href='(/[^']+/stream-\d+)'", html_page)
+        found = False
+        for sub in sub_links:
+            sub_url = 'https://rugbybox.me' + sub
+            print(f'[extractor] Trying stream sub-page: {sub_url}', file=sys.stderr, flush=True)
+            sub_html, sub_status = _fetch(page_sess, sub_url)
+            if sub_html and sub_status == 200:
+                zm = re.search(r'zmid\s*=\s*"([^"]+)"', sub_html)
+                pm = re.search(r'\bpid\s*=\s*(\d+)', sub_html)
+                em = re.search(r'edm\s*=\s*"([^"]+)"', sub_html)
+                if zm and pm and em:
+                    html_page = sub_html
+                    zmid_m, pid_m, edm_m = zm, pm, em
+                    found = True
+                    break
+        if not found:
+            print(f'[extractor] page snippet: {html_page[:800]}', file=sys.stderr, flush=True)
+            raise RuntimeError('casthill embed config not found in match page or sub-pages')
 
     zmid     = zmid_m.group(1)
     pid      = pid_m.group(1)
