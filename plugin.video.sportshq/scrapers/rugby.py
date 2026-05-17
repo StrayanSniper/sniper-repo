@@ -43,25 +43,15 @@ _HEADERS = {
 # Sydney time helper
 # ---------------------------------------------------------------------------
 
-def _sydney_utc_offset():
-    today = datetime.date.today()
-    year  = today.year
-    april1    = datetime.date(year, 4, 1)
-    dst_end   = april1 + datetime.timedelta(days=(6 - april1.weekday()) % 7)
-    oct1      = datetime.date(year, 10, 1)
-    dst_start = oct1   + datetime.timedelta(days=(6 - oct1.weekday())   % 7)
-    return 10 if dst_end <= today < dst_start else 11
-
-
-def _to_sydney_time(title):
+def _to_local_time(title):
     m = re.match(r'^(\d{2}):(\d{2})(.*)', title)
     if not m:
         return title
     hh, mm, rest = int(m.group(1)), int(m.group(2)), m.group(3)
-    offset = _sydney_utc_offset()
-    total  = hh * 60 + mm + offset * 60
-    hh, mm = (total // 60) % 24, total % 60
-    return f'{hh:02d}:{mm:02d}{rest}'
+    utc_dt   = datetime.datetime.now(datetime.timezone.utc).replace(
+                   hour=hh, minute=mm, second=0, microsecond=0)
+    local_dt = utc_dt.astimezone()
+    return f'{local_dt.hour:02d}:{local_dt.minute:02d}{rest}'
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +135,7 @@ def list_matches(handle, base_url):
     )
 
     for match in matches:
-        title = _to_sydney_time(match['title'])
+        title = _to_local_time(match['title'])
         li = xbmcgui.ListItem(label=title)
         li.setInfo('video', {'title': title, 'mediatype': 'video'})
         li.setProperty('IsPlayable', 'true')
@@ -237,4 +227,6 @@ def play_stream(handle, match_url):
     li.setProperty('inputstream.ffmpegdirect.manifest_type', 'hls')
     li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
     li.setProperty('inputstream.ffmpegdirect.stream_mode', 'timeshift')
+    li.setProperty('inputstream.ffmpegdirect.open_timeout', '30')
     xbmcplugin.setResolvedUrl(handle, True, li)
+

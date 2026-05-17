@@ -16,28 +16,16 @@ import urllib.parse
 import urllib.request
 import html.parser
 
-def _sydney_utc_offset():
-    """Return Sydney's current UTC offset (10 = AEST, 11 = AEDT), no imports needed."""
-    today = datetime.date.today()
-    year  = today.year
-    # DST ends first Sunday in April; starts first Sunday in October
-    april1  = datetime.date(year, 4,  1)
-    dst_end = april1  + datetime.timedelta(days=(6 - april1.weekday())  % 7)
-    oct1    = datetime.date(year, 10, 1)
-    dst_start = oct1 + datetime.timedelta(days=(6 - oct1.weekday()) % 7)
-    return 10 if dst_end <= today < dst_start else 11
-
-
-def _to_sydney_time(title):
-    """Convert a leading HH:MM UTC time in a match title to Australia/Sydney time."""
+def _to_local_time(title):
+    """Convert a leading HH:MM UTC time in a match title to device local time."""
     m = re.match(r'^(\d{2}):(\d{2})(.*)', title)
     if not m:
         return title
     hh, mm, rest = int(m.group(1)), int(m.group(2)), m.group(3)
-    offset = _sydney_utc_offset()
-    total  = hh * 60 + mm + offset * 60
-    hh, mm = (total // 60) % 24, total % 60
-    return f'{hh:02d}:{mm:02d}{rest}'
+    utc_dt    = datetime.datetime.now(datetime.timezone.utc).replace(
+                    hour=hh, minute=mm, second=0, microsecond=0)
+    local_dt  = utc_dt.astimezone()
+    return f'{local_dt.hour:02d}:{local_dt.minute:02d}{rest}'
 
 import xbmc
 import xbmcgui
@@ -145,7 +133,7 @@ def list_matches():
     xbmcplugin.addDirectoryItem(HANDLE, BASE_URL + '?action=refresh', li_refresh, True)
 
     for match in matches:
-        title = _to_sydney_time(match['title'])
+        title = _to_local_time(match['title'])
         li = xbmcgui.ListItem(label=title)
         li.setInfo('video', {'title': title, 'mediatype': 'video'})
         li.setProperty('IsPlayable', 'true')
@@ -162,10 +150,6 @@ def list_matches():
 # ---------------------------------------------------------------------------
 
 def _poll_for_url(thread, dialog, timeout_ms=60000):
-    """
-    Poll TEMP_URL_FILE until the extractor thread writes a URL or finishes.
-    Returns (stream_url_or_None, cancelled_bool).
-    """
     poll_ms    = 500
     elapsed_ms = 0
     while elapsed_ms < timeout_ms:
@@ -179,7 +163,6 @@ def _poll_for_url(thread, dialog, timeout_ms=60000):
         except OSError:
             pass
         if not thread.is_alive():
-            # Thread finished — do one final read in case the write just landed
             try:
                 with open(TEMP_URL_FILE, 'r') as f:
                     url = f.read().strip()
@@ -247,6 +230,7 @@ def play_stream(match_url):
     li.setProperty('inputstream.ffmpegdirect.manifest_type', 'hls')
     li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
     li.setProperty('inputstream.ffmpegdirect.stream_mode', 'timeshift')
+    li.setProperty('inputstream.ffmpegdirect.open_timeout', '30')
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
