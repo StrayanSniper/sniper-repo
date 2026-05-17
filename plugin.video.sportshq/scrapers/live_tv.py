@@ -9,7 +9,10 @@ casthill/boanki proxy pipeline.
 import os
 import re
 import sys
+import json
+import socket as _socket
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -19,9 +22,12 @@ import xbmcplugin
 import xbmcvfs
 import xbmcaddon
 
-_ADDON_DIR = xbmcaddon.Addon().getAddonInfo('path')
-_KODI_TEMP = xbmcvfs.translatePath('special://temp/')
-_TEMP_FILE = os.path.join(_KODI_TEMP, 'sportshq_livetv.url')
+_ADDON_DIR         = xbmcaddon.Addon().getAddonInfo('path')
+_KODI_TEMP         = xbmcvfs.translatePath('special://temp/')
+_TEMP_FILE         = os.path.join(_KODI_TEMP, 'sportshq_livetv.url')
+_PROXY_CACHE_FILE  = os.path.join(_KODI_TEMP, 'sportshq_proxy_cache.json')
+_GRACE_PERIOD_S    = 60   # keep proxy alive this long after stopping
+_CACHE_MAX_AGE_S   = 240  # 4 minutes — matches CDN session lifetime
 
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
@@ -209,11 +215,83 @@ def list_live_streams(handle, base_url, addon_icon, fanart):
 
 
 # ---------------------------------------------------------------------------
+# Proxy cache helpers
+# ---------------------------------------------------------------------------
+
+def _cache_read():
+    try:
+        with open(_PROXY_CACHE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _cache_write(match_url, proxy_url):
+    try:
+        cache = _cache_read()
+        cache[match_url] = {'proxy_url': proxy_url, 'saved_at': time.time()}
+        with open(_PROXY_CACHE_FILE, 'w') as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+
+def _proxy_alive(proxy_url):
+    """Return True if the proxy at proxy_url is still accepting connections."""
+    try:
+        port = int(proxy_url.split(':')[2].split('/')[0])
+        s = _socket.socket()
+        s.settimeout(0.3)
+        s.connect(('127.0.0.1', port))
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def _cached_proxy(match_url):
+    """Return a live proxy URL from cache, or None."""
+    cache = _cache_read()
+    entry = cache.get(match_url)
+    if not entry:
+        return None
+    if time.time() - entry.get('saved_at', 0) > _CACHE_MAX_AGE_S:
+        return None
+    proxy_url = entry.get('proxy_url', '')
+    return proxy_url if _proxy_alive(proxy_url) else None
+
+
+# ---------------------------------------------------------------------------
 # Playback  (same pipeline as rugby scraper)
 # ---------------------------------------------------------------------------
 
+def _play_url(handle, stream_url):
+    li = xbmcgui.ListItem(path=stream_url)
+    li.setMimeType('application/vnd.apple.mpegurl')
+    li.setContentLookup(False)
+    li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
+    li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
+    li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
+    li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
+    xbmcplugin.setResolvedUrl(handle, True, li)
+
+    player  = xbmc.Player()
+    monitor = xbmc.Monitor()
+    timeout = 0
+    while not player.isPlaying() and timeout < 20 and not monitor.abortRequested():
+        xbmc.sleep(500)
+        timeout += 1
+    while player.isPlaying() and not monitor.abortRequested():
+        xbmc.sleep(1000)
+    # Grace period — proxy stays alive so the next channel click is instant
+    grace = _GRACE_PERIOD_S
+    while grace > 0 and not monitor.abortRequested():
+        xbmc.sleep(1000)
+        grace -= 1
+
+
 def _poll_for_url(thread, dialog, timeout_ms=60000):
-    poll_ms    = 500
+    poll_ms    = 200  # 200ms for faster detection
     elapsed_ms = 0
     while elapsed_ms < timeout_ms:
         if dialog.iscanceled():
@@ -244,6 +322,14 @@ def _poll_for_url(thread, dialog, timeout_ms=60000):
 def play_stream(handle, match_url):
     xbmc.log(f'[sportshq/livetv] play: {match_url}', xbmc.LOGINFO)
 
+    # Fast path — reuse proxy from a recent previous session
+    cached = _cached_proxy(match_url)
+    if cached:
+        xbmc.log(f'[sportshq/livetv] cache hit: {cached}', xbmc.LOGINFO)
+        _play_url(handle, cached)
+        return
+
+    # Slow path — full extraction
     _extractor.shutdown_proxy()
     try:
         os.remove(_TEMP_FILE)
@@ -284,21 +370,5 @@ def play_stream(handle, match_url):
         return
 
     xbmc.log(f'[sportshq/livetv] play_url={stream_url}', xbmc.LOGINFO)
-    li = xbmcgui.ListItem(path=stream_url)
-    li.setMimeType('application/vnd.apple.mpegurl')
-    li.setContentLookup(False)
-    li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
-    li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
-    li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
-    li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
-    xbmcplugin.setResolvedUrl(handle, True, li)
-
-    # Keep script alive so proxy daemon threads stay running
-    player  = xbmc.Player()
-    monitor = xbmc.Monitor()
-    timeout = 0
-    while not player.isPlaying() and timeout < 20 and not monitor.abortRequested():
-        xbmc.sleep(500)
-        timeout += 1
-    while player.isPlaying() and not monitor.abortRequested():
-        xbmc.sleep(1000)
+    _cache_write(match_url, stream_url)
+    _play_url(handle, stream_url)

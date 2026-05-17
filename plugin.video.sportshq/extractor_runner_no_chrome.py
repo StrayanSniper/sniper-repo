@@ -126,6 +126,24 @@ def _get_seg(url: str) -> bytes:
     return _cdn_session.get(url, timeout=30).content
 
 
+def _prefetch_initial_segments():
+    """Pre-fetch first segments immediately at proxy start to cut playback startup time."""
+    time.sleep(0.2)
+    try:
+        playlist = _get_cdn_playlist()
+        seg_urls = [
+            _abs_url(l.strip(), _cdn_base)
+            for l in playlist.splitlines()
+            if l.strip() and not l.startswith('#')
+        ]
+        for u in seg_urls[:PREFETCH_COUNT]:
+            with _seg_cache_lock:
+                if u not in _seg_cache:
+                    threading.Thread(target=_prefetch_seg, args=(u,), daemon=True).start()
+    except Exception:
+        pass
+
+
 def _trigger_prefetch(current_url: str):
     try:
         playlist = _get_cdn_playlist()
@@ -545,6 +563,7 @@ def extract(match_url: str, temp_file: str):
     _proxy_server = _ProxyServer(('127.0.0.1', port), _ProxyHandler)
     threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
     threading.Thread(target=_session_refresh_loop, daemon=True).start()
+    threading.Thread(target=_prefetch_initial_segments, daemon=True).start()
     print(f'[extractor] Proxy on port {port}', file=sys.stderr, flush=True)
 
     proxy_url = f'http://127.0.0.1:{port}/playlist.m3u8'
