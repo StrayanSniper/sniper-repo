@@ -123,12 +123,26 @@ def _status_label(channel):
         return '[COLOR FF444466]○  Off Air[/COLOR]'
 
 
+def _sport_label(channel):
+    url = channel.get('url') or ''
+    if '/nrl' in url:
+        return 'NRL'
+    if 'rugby-union' in url or 'rugby_union' in url:
+        return 'Rugby Union'
+    section = channel.get('section', '')
+    if section.upper() == 'NRL':
+        return 'NRL'
+    if section:
+        return section
+    return ''
+
+
 def _make_list_item(channel):
     li = xbmcgui.ListItem(label=channel['name'])
     li.setLabel2(f'CH {channel["number"]}')
     li.setArt({'icon': channel['logo'], 'thumb': channel['logo']})
     li.setInfo('video', {
-        'plot':  channel.get('section', ''),
+        'plot':  _sport_label(channel),
         'genre': _status_label(channel),
     })
     return li
