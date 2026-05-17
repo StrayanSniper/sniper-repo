@@ -30,6 +30,7 @@ ZIPS_DIR  = REPO_ROOT / 'zips'
 ADDON_DIRS = [
     'repository.sniper',
     'plugin.video.rugbystreams',
+    'plugin.video.sportshq',
 ]
 
 # Files/dirs to exclude when zipping
