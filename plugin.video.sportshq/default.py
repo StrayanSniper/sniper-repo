@@ -30,6 +30,15 @@ SPORTS = [
     ('boxing', 'Boxing',               _img('boxing.png')),
 ]
 
+ADVANCED_SETTINGS = """<advancedsettings>
+  <network>
+    <buffermode>4</buffermode>
+    <cachemembuffersize>104857600</cachemembuffersize>
+    <readbufferfactor>20</readbufferfactor>
+  </network>
+</advancedsettings>
+"""
+
 
 def _param(key):
     v = PARAMS.get(key, [None])[0]
@@ -56,6 +65,12 @@ def main_menu():
         })
         url = f'{BASE_URL}?action=list&sport={sport_id}'
         xbmcplugin.addDirectoryItem(HANDLE, url, li, True)
+
+    # Buffer optimiser tile
+    li_buf = xbmcgui.ListItem(label='[B]⚙ Optimise Buffering[/B]')
+    li_buf.setArt({'thumb': ICON, 'icon': ICON, 'fanart': FANART})
+    li_buf.setInfo('video', {'title': 'Optimise Buffering', 'plot': 'Write advancedsettings.xml to maximise stream buffer. Run once then restart Kodi.', 'mediatype': 'video'})
+    xbmcplugin.addDirectoryItem(HANDLE, f'{BASE_URL}?action=optimise_buffer', li_buf, False)
 
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
@@ -95,12 +110,28 @@ def play_stream(sport, url):
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 
+def optimise_buffer():
+    path = xbmcvfs.translatePath('special://masterprofile/advancedsettings.xml')
+    try:
+        with xbmcvfs.File(path, 'w') as f:
+            f.write(ADVANCED_SETTINGS)
+        xbmcgui.Dialog().ok(
+            'Sports HQ',
+            'Buffer settings applied.[CR][CR]Please restart Kodi for the changes to take effect.'
+        )
+    except Exception as exc:
+        xbmcgui.Dialog().ok('Sports HQ', f'Failed to write settings: {exc}')
+    xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+
+
 def router():
     action = _param('action')
     sport  = _param('sport')
 
     if action is None:
         main_menu()
+    elif action == 'optimise_buffer':
+        optimise_buffer()
     elif action == 'list' and sport:
         list_sport(sport)
     elif action == 'play' and sport:
