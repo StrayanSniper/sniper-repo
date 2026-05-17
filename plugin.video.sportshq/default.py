@@ -29,6 +29,7 @@ SPORTS = [
     ('rugby',  'Rugby Union / League', _img('rugby.png')),
     ('ufc',    'UFC',                  _img('ufc.png')),
     ('boxing', 'Boxing',               _img('boxing.png')),
+    ('nba',    'NBA',                  _img('logo_nba.jpg')),
 ]
 
 ADVANCED_SETTINGS = """<advancedsettings>
@@ -103,6 +104,10 @@ def list_sport(sport):
         xbmcplugin.setPluginCategory(HANDLE, 'Boxing')
         from scrapers.boxing import list_events
         list_events(HANDLE, BASE_URL, sport_thumb, FANART)
+    elif sport == 'nba':
+        xbmcplugin.setPluginCategory(HANDLE, 'NBA')
+        from scrapers.nba import list_events
+        list_events(HANDLE, BASE_URL, sport_thumb, FANART)
     else:
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
@@ -117,6 +122,9 @@ def play_stream(sport, url):
     elif sport == 'boxing':
         from scrapers.boxing import play_stream
         play_stream(HANDLE, url, _param('title') or 'Boxing')
+    elif sport == 'nba':
+        from scrapers.nba import play_stream
+        play_stream(HANDLE, url, _param('title') or 'NBA')
     elif sport == 'livetv':
         pass  # handled inside ChannelListWindow
     else:
