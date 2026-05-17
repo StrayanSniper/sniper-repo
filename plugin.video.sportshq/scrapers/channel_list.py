@@ -116,10 +116,11 @@ def _build_channels():
 
 
 def _status_label(channel):
+    game = channel.get('name', '')
     if channel['status'] == 'live':
-        return f'[COLOR FF44FF88]● LIVE[/COLOR]   {channel["name"]}'
+        return f'[COLOR FF44FF88]● LIVE[/COLOR]   {game}'
     elif channel['status'] == 'loading':
-        return f'[COLOR FFAAAAAA]⏳ Loading...[/COLOR]   {channel["name"]}'
+        return f'[COLOR FFAAAAAA]⏳ Loading...[/COLOR]   {game}'
     else:
         return '[COLOR FF444466]○  Off Air[/COLOR]'
 
@@ -139,12 +140,13 @@ def _sport_label(channel):
 
 
 def _make_list_item(channel):
-    li = xbmcgui.ListItem(label=channel['name'])
+    sport = _sport_label(channel)
+    li = xbmcgui.ListItem(label=sport)   # left column: NRL / Rugby Union
     li.setLabel2(f'CH {channel["number"]}')
     li.setArt({'icon': channel['logo'], 'thumb': channel['logo']})
     li.setInfo('video', {
-        'plot':  _sport_label(channel),
-        'genre': _status_label(channel),
+        'plot':  '',                       # nothing below the sport label
+        'genre': _status_label(channel),   # right column: ● LIVE 18:25 Penrith vs St George
     })
     return li
 
