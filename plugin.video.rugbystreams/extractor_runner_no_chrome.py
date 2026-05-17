@@ -52,6 +52,7 @@ import sys
 import os
 import time
 import base64
+import socket
 import threading
 import http.server
 import urllib.parse
@@ -124,6 +125,7 @@ def shutdown_proxy():
     if _proxy_server is not None:
         try:
             _proxy_server.shutdown()
+            _proxy_server.server_close()
         except Exception:
             pass
         _proxy_server = None
@@ -257,6 +259,20 @@ def _rewrite_playlist(text: str, proxy_base: str) -> str:
             line = f'{proxy_base}/seg?url={urllib.parse.quote(abs_seg, safe="")}'
         out.append(line)
     return '\r\n'.join(out)
+
+
+class _ReusePortServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer that sets SO_REUSEPORT on Linux/Android so a new
+    instance can bind even if the previous invocation's socket is still open."""
+    allow_reuse_address = True
+
+    def server_bind(self):
+        if hasattr(socket, 'SO_REUSEPORT'):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
 
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -561,7 +577,7 @@ def extract(match_url: str, temp_file: str):
     _cdn_base      = _base_of(media_url)
 
     # ---- Step 8: start local proxy ---------------------------------------
-    _proxy_server = http.server.ThreadingHTTPServer(('127.0.0.1', PROXY_PORT), _ProxyHandler)
+    _proxy_server = _ReusePortServer(('127.0.0.1', PROXY_PORT), _ProxyHandler)
     threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
     print(f'[extractor] Proxy on port {PROXY_PORT}', file=sys.stderr, flush=True)
 
