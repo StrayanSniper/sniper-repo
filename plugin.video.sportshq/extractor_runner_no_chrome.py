@@ -1,17 +1,24 @@
 """
 extractor_runner_no_chrome.py — casthill.net stream extractor for rugbybox.me.
 
-Resolves the HLS master URL + auth headers and writes them to temp_file as:
-    https://cdn.../master.m3u8?u_id=XXX|User-Agent=...&Referer=...
+The CDN (peulleieo.net) binds auth parameters (u_id, ssid) in segment/key
+URLs only for the HTTP session that called boanki.net.  A local proxy is
+therefore required: it fetches the CDN playlist with the authenticated
+Python session, rewrites all URLs to go through itself, and serves them to
+Kodi's ffmpegdirect player.
 
-Kodi plays this directly via inputstream.ffmpegdirect — no local proxy needed.
+Port is chosen randomly from free OS ports to avoid any Android conflicts.
 """
 
 import re
 import sys
 import os
 import base64
+import socket
+import threading
+import http.server
 import urllib.parse
+import time
 
 _lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
 if _lib_dir not in sys.path:
@@ -29,10 +36,193 @@ UA = (
     'Chrome/120.0.0.0 Safari/537.36'
 )
 
+PLAYLIST_TTL = 2.0
+
+# ---------------------------------------------------------------------------
+# Proxy state  (module-level so daemon threads can access it)
+# ---------------------------------------------------------------------------
+
+_cdn_session   = _requests.Session()
+_cdn_media_url = None
+_cdn_base      = None
+_proxy_server  = None
+
+_playlist_cache      = {'text': None, 'expires': 0.0}
+_playlist_cache_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Proxy lifecycle
+# ---------------------------------------------------------------------------
 
 def shutdown_proxy():
-    """No-op — kept for API compatibility with callers."""
-    pass
+    global _proxy_server
+    if _proxy_server is not None:
+        try:
+            _proxy_server.shutdown()
+            _proxy_server.server_close()
+        except Exception:
+            pass
+        _proxy_server = None
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+# ---------------------------------------------------------------------------
+# CDN helpers
+# ---------------------------------------------------------------------------
+
+def _base_of(url: str) -> str:
+    return url.split('?')[0].rsplit('/', 1)[0] + '/'
+
+
+def _abs_url(url: str, base: str) -> str:
+    if url.startswith('http'):
+        return url
+    if url.startswith('//'):
+        return 'https:' + url
+    if url.startswith('/'):
+        p = urllib.parse.urlparse(base)
+        return f'{p.scheme}://{p.netloc}{url}'
+    return base + url
+
+
+def _get_cdn_playlist() -> str:
+    now = time.time()
+    with _playlist_cache_lock:
+        if _playlist_cache['text'] and now < _playlist_cache['expires']:
+            return _playlist_cache['text']
+    text = _cdn_session.get(_cdn_media_url, timeout=20).text
+    with _playlist_cache_lock:
+        _playlist_cache['text']    = text
+        _playlist_cache['expires'] = now + PLAYLIST_TTL
+    return text
+
+
+def _rewrite_playlist(text: str, proxy_base: str) -> str:
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#EXT-X-KEY:'):
+            def _rk(m):
+                raw_uri = m.group(1)
+                abs_uri = _abs_url(raw_uri, _cdn_base)
+                return f'URI="{proxy_base}/key?url={urllib.parse.quote(abs_uri, safe="")}"'
+            line = re.sub(r'URI="([^"]*)"', _rk, line)
+        elif stripped and not stripped.startswith('#'):
+            abs_seg = _abs_url(stripped, _cdn_base)
+            line = f'{proxy_base}/seg?url={urllib.parse.quote(abs_seg, safe="")}'
+        out.append(line)
+    return '\r\n'.join(out)
+
+
+def _best_variant_url(master_url: str) -> str:
+    text     = _cdn_session.get(master_url, timeout=20).text
+    cdn_host = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
+    base     = _base_of(master_url)
+    best_url, best_bw = None, -1
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('#EXT-X-STREAM-INF:'):
+            bw   = int(m.group(1)) if (m := re.search(r'BANDWIDTH=(\d+)', line)) else 0
+            j    = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
+                j += 1
+            if j < len(lines):
+                variant = lines[j].strip()
+                if variant.startswith('/'):
+                    variant = cdn_host + variant
+                elif not variant.startswith('http'):
+                    variant = base + variant
+                if bw > best_bw:
+                    best_bw, best_url = bw, variant
+        i += 1
+    return best_url or master_url
+
+
+# ---------------------------------------------------------------------------
+# Proxy HTTP handler
+# ---------------------------------------------------------------------------
+
+class _ProxyHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        print(f'[proxy] {fmt % args}', file=sys.stderr, flush=True)
+
+    def do_GET(self):
+        parsed     = urllib.parse.urlparse(self.path)
+        qs         = urllib.parse.parse_qs(parsed.query)
+        proxy_base = f'http://127.0.0.1:{self.server.server_address[1]}'
+
+        if parsed.path == '/shutdown':
+            self.send_response(200)
+            self.end_headers()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+        elif parsed.path == '/playlist.m3u8':
+            try:
+                body = _rewrite_playlist(
+                    _get_cdn_playlist(), proxy_base
+                ).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                print(f'[proxy] playlist error: {exc}', file=sys.stderr, flush=True)
+                self.send_response(502)
+                self.end_headers()
+
+        elif parsed.path == '/key':
+            key_url = qs.get('url', [None])[0]
+            if not key_url:
+                self.send_response(400); self.end_headers(); return
+            try:
+                data = _cdn_session.get(urllib.parse.unquote(key_url), timeout=20).content
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as exc:
+                print(f'[proxy] key error: {exc}', file=sys.stderr, flush=True)
+                self.send_response(502); self.end_headers()
+
+        elif parsed.path == '/seg':
+            seg_url = qs.get('url', [None])[0]
+            if not seg_url:
+                self.send_response(400); self.end_headers(); return
+            try:
+                data = _cdn_session.get(urllib.parse.unquote(seg_url), timeout=30).content
+                self.send_response(200)
+                self.send_header('Content-Type', 'video/mp2t')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as exc:
+                print(f'[proxy] seg error: {exc}', file=sys.stderr, flush=True)
+                self.send_response(502); self.end_headers()
+
+        else:
+            self.send_response(404); self.end_headers()
+
+
+class _ProxyServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+
+    def server_bind(self):
+        if hasattr(socket, 'SO_REUSEPORT'):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
 
 # ---------------------------------------------------------------------------
@@ -150,17 +340,16 @@ def _call_boanki(ev: dict, iframe_url: str, edm: str) -> str:
 # ---------------------------------------------------------------------------
 
 def extract(match_url: str, temp_file: str):
-    """
-    Resolve the stream for match_url and write  url|headers  to temp_file.
-    The caller passes this directly to inputstream.ffmpegdirect — no proxy.
-    """
+    global _cdn_media_url, _cdn_base, _proxy_server, _cdn_session
+
+    shutdown_proxy()
+
     print(f'[extractor] Fetching match page: {match_url}', file=sys.stderr, flush=True)
     page_sess = _build_scrape_session('https://rugbybox.me/')
     html_page, status = _fetch(page_sess, match_url)
     if not html_page or status != 200:
         raise RuntimeError(f'match page returned HTTP {status}')
 
-    # Extract casthill embed config; fall back to stream sub-pages if needed
     zmid_m = re.search(r'zmid\s*=\s*"([^"]+)"', html_page)
     pid_m  = re.search(r'\bpid\s*=\s*(\d+)', html_page)
     edm_m  = re.search(r'edm\s*=\s*"([^"]+)"', html_page)
@@ -170,8 +359,7 @@ def extract(match_url: str, temp_file: str):
         sub_links += re.findall(r"href='(/[^']+/stream-\d+)'", html_page)
         found = False
         for sub in sub_links:
-            sub_url = 'https://rugbybox.me' + sub
-            print(f'[extractor] Trying sub-page: {sub_url}', file=sys.stderr, flush=True)
+            sub_url  = 'https://rugbybox.me' + sub
             sub_html, sub_status = _fetch(page_sess, sub_url)
             if sub_html and sub_status == 200:
                 zm = re.search(r'zmid\s*=\s*"([^"]+)"', sub_html)
@@ -216,16 +404,37 @@ def extract(match_url: str, temp_file: str):
     ev = _extract_embed_vars(html_embed)
     print(f'[extractor] urlSource: {ev["url_source"][:80]}', file=sys.stderr, flush=True)
 
-    device_id  = _call_boanki(ev, iframe_url, edm)
-    stream_url = ev['url_source'] + f'?u_id={device_id}'
+    device_id = _call_boanki(ev, iframe_url, edm)
 
-    headers = urllib.parse.urlencode({
+    # Build CDN session with correct auth headers for all CDN requests
+    _cdn_session = _requests.Session()
+    _cdn_session.headers.update({
         'User-Agent': UA,
         'Referer':    iframe_url,
         'Origin':     f'https://{edm}',
+        'Accept':     '*/*',
     })
-    full_url = f'{stream_url}|{headers}'
 
-    print('[extractor] Stream URL ready', file=sys.stderr, flush=True)
+    master_url     = ev['url_source'] + f'?u_id={device_id}'
+    print(f'[extractor] Fetching master: {master_url[:80]}...', file=sys.stderr, flush=True)
+    media_url      = _best_variant_url(master_url)
+    print(f'[extractor] Media playlist: {media_url[:80]}', file=sys.stderr, flush=True)
+
+    _cdn_media_url = media_url
+    _cdn_base      = _base_of(media_url)
+
+    # Reset playlist cache for the new session
+    with _playlist_cache_lock:
+        _playlist_cache['text']    = None
+        _playlist_cache['expires'] = 0.0
+
+    # Use a random free port — no port conflicts on any platform
+    port = _find_free_port()
+    _proxy_server = _ProxyServer(('127.0.0.1', port), _ProxyHandler)
+    threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
+    print(f'[extractor] Proxy on port {port}', file=sys.stderr, flush=True)
+
+    proxy_url = f'http://127.0.0.1:{port}/playlist.m3u8'
     with open(temp_file, 'w') as f:
-        f.write(full_url)
+        f.write(proxy_url)
+    print(f'[extractor] Written {proxy_url}', file=sys.stderr, flush=True)

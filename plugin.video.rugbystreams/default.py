@@ -17,15 +17,7 @@ import urllib.request
 import html.parser
 
 def _to_local_time(title):
-    """Convert a leading HH:MM UTC time in a match title to device local time."""
-    m = re.match(r'^(\d{2}):(\d{2})(.*)', title)
-    if not m:
-        return title
-    hh, mm, rest = int(m.group(1)), int(m.group(2)), m.group(3)
-    utc_dt    = datetime.datetime.now(datetime.timezone.utc).replace(
-                    hour=hh, minute=mm, second=0, microsecond=0)
-    local_dt  = utc_dt.astimezone()
-    return f'{local_dt.hour:02d}:{local_dt.minute:02d}{rest}'
+    return title
 
 import xbmc
 import xbmcgui
