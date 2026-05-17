@@ -171,15 +171,15 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
     def onInit(self):
         self.list_ctrl = self.getControl(100)
+        # Return immediately so the window renders — load everything in background
+        threading.Thread(target=self._init_async, daemon=True).start()
 
-        # If no cached stream list, scrape now (inside the window, not before it)
+    def _init_async(self):
+        """Runs after the window is visible. Scrapes, populates, pre-extracts."""
         if not _stream_list_load():
-            xbmc.executebuiltin('ActivateWindow(busydialognocancel)')
             streams = _get_all_sections()
             if streams:
                 _stream_list_save(streams)
-            xbmc.executebuiltin('Dialog.Close(busydialognocancel)')
-
         self._load_channels()
         self._start_preextraction()
 
