@@ -87,6 +87,7 @@ UA = (
 )
 
 PROXY_PORT     = 19823
+PROXY_PORT_MAX = 19832  # Try up to this port if 19823 is busy
 PROXY_TIMEOUT  = 7200
 PREFETCH_COUNT = 6
 PLAYLIST_TTL   = 2.0
@@ -284,7 +285,12 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         qs        = urllib.parse.parse_qs(parsed.query)
         proxy_base = f'http://127.0.0.1:{PROXY_PORT}'
 
-        if parsed.path == '/master.m3u8':
+        if parsed.path == '/shutdown':
+            self.send_response(200)
+            self.end_headers()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+        elif parsed.path == '/master.m3u8':
             body = _fake_master(proxy_base)
             self.send_response(200)
             self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
@@ -577,11 +583,31 @@ def extract(match_url: str, temp_file: str):
     _cdn_base      = _base_of(media_url)
 
     # ---- Step 8: start local proxy ---------------------------------------
-    _proxy_server = _ReusePortServer(('127.0.0.1', PROXY_PORT), _ProxyHandler)
-    threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
-    print(f'[extractor] Proxy on port {PROXY_PORT}', file=sys.stderr, flush=True)
+    # Ask any existing proxy (from a previous invocation) to shut down, then
+    # scan ports 19823-19832 for one we can bind to.
+    try:
+        import urllib.request as _ureq
+        _ureq.urlopen(f'http://127.0.0.1:{PROXY_PORT}/shutdown', timeout=2)
+        time.sleep(0.6)
+    except Exception:
+        pass
 
-    proxy_url = f'http://127.0.0.1:{PROXY_PORT}/playlist.m3u8'
+    bound_port = None
+    for _port in range(PROXY_PORT, PROXY_PORT_MAX + 1):
+        try:
+            _proxy_server = _ReusePortServer(('127.0.0.1', _port), _ProxyHandler)
+            bound_port = _port
+            break
+        except OSError:
+            continue
+
+    if bound_port is None:
+        raise RuntimeError(f'Could not bind proxy on ports {PROXY_PORT}-{PROXY_PORT_MAX}')
+
+    threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
+    print(f'[extractor] Proxy on port {bound_port}', file=sys.stderr, flush=True)
+
+    proxy_url = f'http://127.0.0.1:{bound_port}/playlist.m3u8'
     with open(temp_file, 'w') as f:
         f.write(proxy_url)
     print(f'[extractor] Written {proxy_url}', file=sys.stderr, flush=True)
