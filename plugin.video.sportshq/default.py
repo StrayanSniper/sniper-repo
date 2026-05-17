@@ -88,9 +88,9 @@ def list_sport(sport):
     xbmcplugin.setContent(HANDLE, 'videos')
 
     if sport == 'livetv':
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         from scrapers.channel_list import open_channel_list
         open_channel_list()
-        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
     elif sport == 'rugby':
         xbmcplugin.setPluginCategory(HANDLE, 'Rugby Union / League')
         from scrapers.rugby import list_matches
