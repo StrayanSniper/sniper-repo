@@ -26,8 +26,10 @@ _ADDON_DIR         = xbmcaddon.Addon().getAddonInfo('path')
 _KODI_TEMP         = xbmcvfs.translatePath('special://temp/')
 _TEMP_FILE         = os.path.join(_KODI_TEMP, 'sportshq_livetv.url')
 _PROXY_CACHE_FILE  = os.path.join(_KODI_TEMP, 'sportshq_proxy_cache.json')
+_STREAM_LIST_FILE  = os.path.join(_KODI_TEMP, 'sportshq_stream_list.json')
 _GRACE_PERIOD_S    = 60   # keep proxy alive this long after stopping
 _CACHE_MAX_AGE_S   = 240  # 4 minutes — matches CDN session lifetime
+_LIST_CACHE_AGE_S  = 300  # 5 minutes — stream list cache
 
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
@@ -206,7 +208,53 @@ def _preextract_all(streams, dialog):
         t.join(timeout=30)  # max 30s total wait
 
 
+def _keepalive_loop():
+    """Keep this Python invocation alive so proxy daemon threads don't die."""
+    monitor = xbmc.Monitor()
+    timeout = _CACHE_MAX_AGE_S  # stay alive until CDN sessions expire
+    while timeout > 0 and not monitor.abortRequested():
+        xbmc.sleep(1000)
+        timeout -= 1
+
+
+def _show_stream_list(handle, base_url, addon_icon, fanart, streams):
+    xbmcplugin.setContent(handle, 'videos')
+    li_r = xbmcgui.ListItem(label='[B]⟳ Refresh[/B]')
+    li_r.setArt({'thumb': addon_icon, 'fanart': fanart})
+    xbmcplugin.addDirectoryItem(handle, base_url + '?action=refresh&sport=livetv', li_r, True)
+    for stream in streams:
+        label = f'[B]{stream["section"]}[/B]  {stream["title"]}'
+        li = xbmcgui.ListItem(label=label)
+        li.setArt({'thumb': addon_icon, 'icon': addon_icon, 'fanart': fanart})
+        li.setInfo('video', {'title': stream['title'], 'plot': f'{stream["section"]} — {stream["title"]}', 'mediatype': 'video'})
+        li.setProperty('IsPlayable', 'true')
+        url = '{}?action=play&sport=livetv&url={}'.format(base_url, urllib.parse.quote(stream['url'], safe=''))
+        xbmcplugin.addDirectoryItem(handle, url, li, False)
+    xbmcplugin.addSortMethod(handle, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.endOfDirectory(handle)
+    xbmc.executebuiltin('Container.SetViewMode(500)')
+
+
 def list_live_streams(handle, base_url, addon_icon, fanart):
+    proxy_cache = _cache_read()
+    now         = time.time()
+
+    # --- Fast path: all proxies still alive from a previous load ---
+    cached_streams = _stream_list_load()
+    if cached_streams:
+        all_alive = all(
+            _proxy_alive(proxy_cache.get(s['url'], {}).get('proxy_url', ''))
+            and now - proxy_cache.get(s['url'], {}).get('saved_at', 0) < _CACHE_MAX_AGE_S
+            for s in cached_streams
+        )
+        if all_alive and cached_streams:
+            xbmc.log('[sportshq/livetv] all proxies alive — instant list', xbmc.LOGINFO)
+            _show_stream_list(handle, base_url, addon_icon, fanart, cached_streams)
+            # Keep alive so proxy threads stay running
+            _keepalive_loop()
+            return
+
+    # --- Slow path: scrape + extract ---
     dialog = xbmcgui.DialogProgress()
     dialog.create('Sports HQ', 'Finding live streams...')
     dialog.update(10)
@@ -215,47 +263,18 @@ def list_live_streams(handle, base_url, addon_icon, fanart):
 
     if not streams:
         dialog.close()
-        xbmcgui.Dialog().notification(
-            'Sports HQ', 'No live streams found right now',
-            xbmcgui.NOTIFICATION_INFO, 4000
-        )
+        xbmcgui.Dialog().notification('Sports HQ', 'No live streams found right now', xbmcgui.NOTIFICATION_INFO, 4000)
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    # Pre-extract ALL streams in parallel while dialog is open
+    _stream_list_save(streams)
     dialog.update(20, f'Found {len(streams)} stream(s) — loading...')
     _preextract_all(streams, dialog)
     dialog.close()
 
-    xbmcplugin.setContent(handle, 'videos')
-
-    # Refresh item
-    li_r = xbmcgui.ListItem(label='[B]⟳ Refresh[/B]')
-    li_r.setArt({'thumb': addon_icon, 'fanart': fanart})
-    xbmcplugin.addDirectoryItem(
-        handle,
-        base_url + '?action=refresh&sport=livetv',
-        li_r, True
-    )
-
-    for stream in streams:
-        label = f'[B]{stream["section"]}[/B]  {stream["title"]}'
-        li = xbmcgui.ListItem(label=label)
-        li.setArt({'thumb': addon_icon, 'icon': addon_icon, 'fanart': fanart})
-        li.setInfo('video', {
-            'title':     stream['title'],
-            'plot':      f'{stream["section"]} — {stream["title"]}',
-            'mediatype': 'video',
-        })
-        li.setProperty('IsPlayable', 'true')
-        url = '{}?action=play&sport=livetv&url={}'.format(
-            base_url, urllib.parse.quote(stream['url'], safe='')
-        )
-        xbmcplugin.addDirectoryItem(handle, url, li, False)
-
-    xbmcplugin.addSortMethod(handle, xbmcplugin.SORT_METHOD_NONE)
-    xbmcplugin.endOfDirectory(handle)
-    xbmc.executebuiltin('Container.SetViewMode(500)')
+    _show_stream_list(handle, base_url, addon_icon, fanart, streams)
+    # Keep alive so pre-extracted proxy threads survive for channel clicks
+    _keepalive_loop()
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +297,25 @@ def _cache_write(match_url, proxy_url):
             json.dump(cache, f)
     except Exception:
         pass
+
+
+def _stream_list_save(streams):
+    try:
+        with open(_STREAM_LIST_FILE, 'w') as f:
+            json.dump({'streams': streams, 'saved_at': time.time()}, f)
+    except Exception:
+        pass
+
+
+def _stream_list_load():
+    try:
+        with open(_STREAM_LIST_FILE) as f:
+            data = json.load(f)
+        if time.time() - data.get('saved_at', 0) < _LIST_CACHE_AGE_S:
+            return data.get('streams', [])
+    except Exception:
+        pass
+    return None
 
 
 def _proxy_alive(proxy_url):
