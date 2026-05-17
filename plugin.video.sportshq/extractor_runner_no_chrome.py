@@ -36,7 +36,8 @@ UA = (
     'Chrome/120.0.0.0 Safari/537.36'
 )
 
-PLAYLIST_TTL = 2.0
+PLAYLIST_TTL   = 2.0
+PREFETCH_COUNT = 4   # segments to pre-fetch ahead of current position
 
 # ---------------------------------------------------------------------------
 # Proxy state  (module-level so daemon threads can access it)
@@ -49,6 +50,9 @@ _proxy_server  = None
 
 _playlist_cache      = {'text': None, 'expires': 0.0}
 _playlist_cache_lock = threading.Lock()
+
+_seg_cache      = {}
+_seg_cache_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +93,55 @@ def _abs_url(url: str, base: str) -> str:
         p = urllib.parse.urlparse(base)
         return f'{p.scheme}://{p.netloc}{url}'
     return base + url
+
+
+def _prefetch_seg(url: str):
+    with _seg_cache_lock:
+        if url in _seg_cache:
+            return
+        _seg_cache[url] = None  # mark in-progress
+    try:
+        data = _cdn_session.get(url, timeout=30).content
+        with _seg_cache_lock:
+            _seg_cache[url] = data
+    except Exception:
+        with _seg_cache_lock:
+            _seg_cache.pop(url, None)
+
+
+def _get_seg(url: str) -> bytes:
+    for _ in range(60):
+        with _seg_cache_lock:
+            if url in _seg_cache:
+                val = _seg_cache[url]
+                if val is not None:
+                    del _seg_cache[url]
+                    return val
+            else:
+                break
+        time.sleep(0.5)
+    return _cdn_session.get(url, timeout=30).content
+
+
+def _trigger_prefetch(current_url: str):
+    try:
+        playlist = _get_cdn_playlist()
+        seg_urls = [
+            _abs_url(l.strip(), _cdn_base)
+            for l in playlist.splitlines()
+            if l.strip() and not l.startswith('#')
+        ]
+        try:
+            idx = next(i for i, u in enumerate(seg_urls) if u == current_url)
+            upcoming = seg_urls[idx + 1: idx + 1 + PREFETCH_COUNT]
+        except StopIteration:
+            upcoming = seg_urls[:PREFETCH_COUNT]
+        for u in upcoming:
+            with _seg_cache_lock:
+                if u not in _seg_cache:
+                    threading.Thread(target=_prefetch_seg, args=(u,), daemon=True).start()
+    except Exception:
+        pass
 
 
 def _get_cdn_playlist() -> str:
@@ -199,12 +252,14 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not seg_url:
                 self.send_response(400); self.end_headers(); return
             try:
-                data = _cdn_session.get(urllib.parse.unquote(seg_url), timeout=30).content
+                actual_url = urllib.parse.unquote(seg_url)
+                data = _get_seg(actual_url)
                 self.send_response(200)
                 self.send_header('Content-Type', 'video/mp2t')
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                threading.Thread(target=_trigger_prefetch, args=(actual_url,), daemon=True).start()
             except Exception as exc:
                 print(f'[proxy] seg error: {exc}', file=sys.stderr, flush=True)
                 self.send_response(502); self.end_headers()
@@ -423,10 +478,12 @@ def extract(match_url: str, temp_file: str):
     _cdn_media_url = media_url
     _cdn_base      = _base_of(media_url)
 
-    # Reset playlist cache for the new session
+    # Reset caches for the new session
     with _playlist_cache_lock:
         _playlist_cache['text']    = None
         _playlist_cache['expires'] = 0.0
+    with _seg_cache_lock:
+        _seg_cache.clear()
 
     # Use a random free port — no port conflicts on any platform
     port = _find_free_port()
