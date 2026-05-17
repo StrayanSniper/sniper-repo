@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="repository.sniper"
        name="Sniper Repo"
-       version="1.0.0"
+       version="1.0.1"
        provider-name="sniper">
   <requires>
     <import addon="xbmc.addon" version="12.0.0"/>
@@ -13,6 +13,7 @@
       <datadir zip="true">https://StrayanSniper.github.io/sniper-repo/zips/</datadir>
       <hashes>false</hashes>
     </dir>
+    <checkinterval>3600</checkinterval>
   </extension>
   <extension point="xbmc.addon.metadata">
     <summary lang="en_GB">Sniper Repo</summary>
