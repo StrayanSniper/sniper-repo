@@ -32,7 +32,18 @@ from scrapers.live_tv import (
     _live_sessions, _live_sessions_lock,
 )
 
-_SPORT_IMG = os.path.join(_ADDON_DIR, 'resources', 'images', 'rugby.png')
+def _img(filename):
+    return os.path.join(_ADDON_DIR, 'resources', 'images', filename)
+
+_LOGO_MAP = [
+    ('/nrl',                  _img('logo_nrl.png'),          'NRL'),
+    ('/england-super-league', _img('logo_super_league.png'), 'Super League'),
+    ('/union-6-nations',      _img('logo_6_nations.png'),    'Six Nations'),
+    ('/union-french-top-14',  _img('logo_top14.png'),        'Top 14'),
+    ('/super-rugby',          _img('logo_super_rugby.png'),  'Super Rugby'),
+    ('/rugby-union',          _img('logo_rugby_union.png'),  'Rugby Union'),
+]
+_DEFAULT_LOGO = _img('rugby.png')
 
 # Channel slot range for live streams
 STREAM_SLOT_START = 30
@@ -88,14 +99,16 @@ def _build_channels():
             status = 'loading'
             play_url = url  # will extract on click
 
+        logo, sport_label = _logo_and_label(url)
         channels.append({
-            'number':    slot,
-            'name':      _to_local_time(stream['title']),
-            'logo':      _SPORT_IMG,
-            'url':       url,
-            'play_url':  play_url,
-            'section':   stream.get('section', 'Rugby'),
-            'status':    status,
+            'number':      slot,
+            'name':        _to_local_time(stream['title']),
+            'logo':        logo,
+            'sport_label': sport_label,
+            'url':         url,
+            'play_url':    play_url,
+            'section':     stream.get('section', sport_label),
+            'status':      status,
         })
 
     # Fill remaining slots as Off Air
@@ -103,13 +116,14 @@ def _build_channels():
     for i in range(used, STREAM_SLOT_END - STREAM_SLOT_START + 1):
         slot = STREAM_SLOT_START + i
         channels.append({
-            'number':   slot,
-            'name':     f'Stream {i + 1}',
-            'logo':     _SPORT_IMG,
-            'url':      None,
-            'play_url': None,
-            'section':  '',
-            'status':   'off_air',
+            'number':      slot,
+            'name':        f'Stream {i + 1}',
+            'logo':        _DEFAULT_LOGO,
+            'sport_label': '',
+            'url':         None,
+            'play_url':    None,
+            'section':     '',
+            'status':      'off_air',
         })
 
     return channels
@@ -125,18 +139,17 @@ def _status_label(channel):
         return '[COLOR FF444466]○  Off Air[/COLOR]'
 
 
+def _logo_and_label(url):
+    """Return (logo_path, sport_label) for a stream URL."""
+    url_lower = (url or '').lower()
+    for pattern, logo, label in _LOGO_MAP:
+        if pattern in url_lower:
+            return logo, label
+    return _DEFAULT_LOGO, 'Rugby'
+
+
 def _sport_label(channel):
-    url = channel.get('url') or ''
-    if '/nrl' in url:
-        return 'NRL'
-    if 'rugby-union' in url or 'rugby_union' in url:
-        return 'Rugby Union'
-    section = channel.get('section', '')
-    if section.upper() == 'NRL':
-        return 'NRL'
-    if section:
-        return section
-    return ''
+    return channel.get('sport_label') or channel.get('section', '')
 
 
 def _make_list_item(channel):
