@@ -25,7 +25,7 @@ def _img(filename):
     return os.path.join(ADDON_PATH, 'resources', 'images', filename)
 
 SPORTS = [
-    ('livetv', 'Live Streams',         ICON),
+    ('livetv', 'Live TV & Streams',    ICON),
     ('rugby',  'Rugby Union / League', _img('rugby.png')),
     ('ufc',    'UFC',                  _img('ufc.png')),
     ('boxing', 'Boxing',               _img('boxing.png')),
@@ -88,9 +88,9 @@ def list_sport(sport):
     xbmcplugin.setContent(HANDLE, 'videos')
 
     if sport == 'livetv':
-        xbmcplugin.setPluginCategory(HANDLE, 'Live Streams')
-        from scrapers.live_tv import list_live_streams
-        list_live_streams(HANDLE, BASE_URL, ICON, FANART)
+        from scrapers.channel_list import open_channel_list
+        open_channel_list()
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
     elif sport == 'rugby':
         xbmcplugin.setPluginCategory(HANDLE, 'Rugby Union / League')
         from scrapers.rugby import list_matches
@@ -112,8 +112,7 @@ def play_stream(sport, url):
         from scrapers.rugby import play_stream
         play_stream(HANDLE, url)
     elif sport == 'livetv':
-        from scrapers.live_tv import play_stream
-        play_stream(HANDLE, url)
+        pass  # handled inside ChannelListWindow
     else:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
