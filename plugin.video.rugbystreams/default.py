@@ -99,11 +99,11 @@ class MatchParser(html.parser.HTMLParser):
 
 
 def get_matches():
-    req = urllib.request.Request(SITE_URL, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        html_bytes = resp.read().decode('utf-8', errors='replace')
+    import requests as _req
+    resp = _req.get(SITE_URL, headers=HEADERS, timeout=15, verify=False)
+    resp.raise_for_status()
     parser = MatchParser()
-    parser.feed(html_bytes)
+    parser.feed(resp.text)
     return parser.matches
 
 
