@@ -283,7 +283,7 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed    = urllib.parse.urlparse(self.path)
         qs        = urllib.parse.parse_qs(parsed.query)
-        proxy_base = f'http://127.0.0.1:{PROXY_PORT}'
+        proxy_base = f'http://127.0.0.1:{self.server.server_address[1]}'
 
         if parsed.path == '/shutdown':
             self.send_response(200)
