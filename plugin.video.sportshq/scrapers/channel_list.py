@@ -171,6 +171,15 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
     def onInit(self):
         self.list_ctrl = self.getControl(100)
+
+        # If no cached stream list, scrape now (inside the window, not before it)
+        if not _stream_list_load():
+            xbmc.executebuiltin('ActivateWindow(busydialognocancel)')
+            streams = _get_all_sections()
+            if streams:
+                _stream_list_save(streams)
+            xbmc.executebuiltin('Dialog.Close(busydialognocancel)')
+
         self._load_channels()
         self._start_preextraction()
 
@@ -299,18 +308,7 @@ class ChannelListWindow(xbmcgui.WindowXML):
 # ---------------------------------------------------------------------------
 
 def open_channel_list():
-    """Open the TV channel list window. Called from default.py."""
-    # Pre-warm stream list if not cached
-    if not _stream_list_load():
-        streams = _get_all_sections()
-        if streams:
-            _stream_list_save(streams)
-
-    window = ChannelListWindow(
-        'ChannelList.xml',
-        _ADDON_DIR,
-        'default',
-        '720p',
-    )
+    """Open the TV channel list window immediately. All loading happens inside onInit."""
+    window = ChannelListWindow('ChannelList.xml', _ADDON_DIR, 'default', '720p')
     window.doModal()
     del window
