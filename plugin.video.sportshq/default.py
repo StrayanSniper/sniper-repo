@@ -111,6 +111,12 @@ def play_stream(sport, url):
     if sport == 'rugby':
         from scrapers.rugby import play_stream
         play_stream(HANDLE, url)
+    elif sport == 'ufc':
+        from scrapers.ufc import play_stream
+        play_stream(HANDLE, url, _param('title') or 'UFC')
+    elif sport == 'boxing':
+        from scrapers.boxing import play_stream
+        play_stream(HANDLE, url, _param('title') or 'Boxing')
     elif sport == 'livetv':
         pass  # handled inside ChannelListWindow
     else:
@@ -134,6 +140,7 @@ def optimise_buffer():
 def router():
     action = _param('action')
     sport  = _param('sport')
+    title  = _param('title')
 
     if action is None:
         main_menu()
