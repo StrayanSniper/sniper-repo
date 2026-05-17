@@ -25,6 +25,7 @@ if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
 
 import extractor_runner_no_chrome as _extractor
+from scrapers.rugby import _to_local_time
 from scrapers.live_tv import (
     _get_all_sections, _stream_list_load, _stream_list_save,
     _cache_read, _cache_write, _proxy_alive, _CACHE_MAX_AGE_S,
@@ -89,7 +90,7 @@ def _build_channels():
 
         channels.append({
             'number':    slot,
-            'name':      stream['title'],
+            'name':      _to_local_time(stream['title']),
             'logo':      _SPORT_IMG,
             'url':       url,
             'play_url':  play_url,
