@@ -239,20 +239,15 @@ def list_live_streams(handle, base_url, addon_icon, fanart):
     proxy_cache = _cache_read()
     now         = time.time()
 
-    # --- Fast path: all proxies still alive from a previous load ---
+    # --- Fast path: stream list is cached → show immediately ---
+    # Channels with live proxies play instantly; others extract fresh on click.
+    # Only re-run the full loading dialog when the stream list is stale (>5 min).
     cached_streams = _stream_list_load()
     if cached_streams:
-        all_alive = all(
-            _proxy_alive(proxy_cache.get(s['url'], {}).get('proxy_url', ''))
-            and now - proxy_cache.get(s['url'], {}).get('saved_at', 0) < _CACHE_MAX_AGE_S
-            for s in cached_streams
-        )
-        if all_alive and cached_streams:
-            xbmc.log('[sportshq/livetv] all proxies alive — instant list', xbmc.LOGINFO)
-            _show_stream_list(handle, base_url, addon_icon, fanart, cached_streams)
-            # Keep alive so proxy threads stay running
-            _keepalive_loop()
-            return
+        xbmc.log(f'[sportshq/livetv] fast path: {len(cached_streams)} cached streams', xbmc.LOGINFO)
+        _show_stream_list(handle, base_url, addon_icon, fanart, cached_streams)
+        _keepalive_loop()
+        return
 
     # --- Slow path: scrape + extract ---
     dialog = xbmcgui.DialogProgress()
