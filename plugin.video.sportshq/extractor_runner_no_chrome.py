@@ -152,7 +152,7 @@ def _get_cdn_playlist() -> str:
     with _playlist_cache_lock:
         if _playlist_cache['text'] and now < _playlist_cache['expires']:
             return _playlist_cache['text']
-    text = _cdn_session.get(_cdn_media_url, timeout=20).text
+    text = _cdn_session.get(_cdn_media_url, timeout=8).text
     with _playlist_cache_lock:
         _playlist_cache['text']    = text
         _playlist_cache['expires'] = now + PLAYLIST_TTL
@@ -304,7 +304,7 @@ def _fetch(session, url: str, referer: str = '', **kwargs):
     if referer:
         session.headers['Referer'] = referer
     try:
-        r = session.get(url, timeout=20, allow_redirects=True, **kwargs)
+        r = session.get(url, timeout=10, allow_redirects=True, **kwargs)
         raw = r.content
         if len(raw) >= 2 and raw[0] == 0x1f and raw[1] == 0x8b:
             import gzip
@@ -378,7 +378,7 @@ def _call_boanki(ev: dict, iframe_url: str, edm: str) -> str:
     })
     auth_url = f"{ev['sec_url']}?{qs}"
     print('[extractor] Calling boanki.net...', file=sys.stderr, flush=True)
-    ra = _requests.get(auth_url, timeout=15, headers={
+    ra = _requests.get(auth_url, timeout=8, headers={
         'User-Agent':  UA,
         'X-CSRF-Auth': ev['csrf_hdr'],
         'Accept':      'application/json',
@@ -470,7 +470,7 @@ def _run_pipeline(match_url: str):
     print(f'[extractor] Master: {master_url[:80]}...', file=sys.stderr, flush=True)
 
     # Fetch variant URL using the new session
-    media_url = new_session.get(master_url, timeout=20).text
+    media_url = new_session.get(master_url, timeout=10).text
     # Parse best variant from master playlist
     cdn_host = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
     base = _base_of(master_url)

@@ -287,11 +287,10 @@ def play_stream(handle, match_url):
     li = xbmcgui.ListItem(path=stream_url)
     li.setMimeType('application/vnd.apple.mpegurl')
     li.setContentLookup(False)
-    li.setProperty('inputstream',                          'inputstream.ffmpegdirect')
+    li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
     li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
     li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
-    li.setProperty('inputstream.ffmpegdirect.stream_mode',       'timeshift')
-    li.setProperty('inputstream.ffmpegdirect.open_timeout',      '30')
+    li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
     xbmcplugin.setResolvedUrl(handle, True, li)
 
     # Keep script alive so proxy daemon threads stay running
