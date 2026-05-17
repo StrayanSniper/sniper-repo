@@ -23,7 +23,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="plugin.video.rugbystreams" name="Rugby Streams" version="1.0.13" provider-name="rugbystreams">
+  <addon id="plugin.video.rugbystreams" name="Rugby Streams" version="1.0.14" provider-name="rugbystreams">
     <requires>
       <import addon="xbmc.python" version="3.0.0" />
     </requires>
@@ -40,7 +40,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.5" provider-name="StrayanSniper">
+  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.6" provider-name="StrayanSniper">
     <requires>
       <import addon="xbmc.python" version="3.0.0" />
     </requires>

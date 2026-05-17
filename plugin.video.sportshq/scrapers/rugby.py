@@ -43,8 +43,39 @@ _HEADERS = {
 # Sydney time helper
 # ---------------------------------------------------------------------------
 
+def _site_to_nsw_offset():
+    today = datetime.date.today()
+    year  = today.year
+
+    def _last_sunday(year, month):
+        import calendar
+        last = datetime.date(year, month, calendar.monthrange(year, month)[1])
+        while last.weekday() != 6:
+            last -= datetime.timedelta(days=1)
+        return last
+
+    def _first_sunday(year, month):
+        d = datetime.date(year, month, 1)
+        while d.weekday() != 6:
+            d += datetime.timedelta(days=1)
+        return d
+
+    uk_bst  = _last_sunday(year, 3) <= today < _last_sunday(year, 10)
+    uk_off  = 1 if uk_bst else 0
+    nsw_aest = _first_sunday(year, 4) <= today < _first_sunday(year, 10)
+    nsw_off  = 10 if nsw_aest else 11
+    return nsw_off - uk_off
+
+
 def _to_local_time(title):
-    return title
+    m = re.match(r'^(\d{1,2}):(\d{2})(.*)', title)
+    if not m:
+        return title
+    hh, mm, rest = int(m.group(1)), int(m.group(2)), m.group(3)
+    offset = _site_to_nsw_offset()
+    total  = hh * 60 + mm + offset * 60
+    hh, mm = (total // 60) % 24, total % 60
+    return f'{hh:02d}:{mm:02d}{rest}'
 
 
 # ---------------------------------------------------------------------------
