@@ -243,6 +243,10 @@ def play_stream(match_url):
     li = xbmcgui.ListItem(path=stream_url)
     li.setMimeType('application/vnd.apple.mpegurl')
     li.setContentLookup(False)
+    li.setProperty('inputstream', 'inputstream.ffmpegdirect')
+    li.setProperty('inputstream.ffmpegdirect.manifest_type', 'hls')
+    li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
+    li.setProperty('inputstream.ffmpegdirect.stream_mode', 'timeshift')
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
