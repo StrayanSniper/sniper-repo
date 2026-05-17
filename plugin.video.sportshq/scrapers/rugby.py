@@ -130,7 +130,7 @@ def _get_matches():
 # Kodi list / play
 # ---------------------------------------------------------------------------
 
-def list_matches(handle, base_url):
+def list_matches(handle, base_url, sport_thumb='', fanart=''):
     try:
         matches = _get_matches()
     except Exception as exc:
@@ -149,9 +149,8 @@ def list_matches(handle, base_url):
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    xbmcplugin.setContent(handle, 'videos')
-
     li_refresh = xbmcgui.ListItem(label='[B]⟳ Refresh[/B]')
+    li_refresh.setArt({'thumb': sport_thumb, 'fanart': fanart})
     xbmcplugin.addDirectoryItem(
         handle,
         base_url + '?action=refresh&sport=rugby',
@@ -161,14 +160,26 @@ def list_matches(handle, base_url):
     for match in matches:
         title = _to_local_time(match['title'])
         li = xbmcgui.ListItem(label=title)
-        li.setInfo('video', {'title': title, 'mediatype': 'video'})
+        li.setArt({
+            'thumb':  sport_thumb,
+            'icon':   sport_thumb,
+            'fanart': fanart,
+            'poster': sport_thumb,
+        })
+        li.setInfo('video', {
+            'title':     title,
+            'plot':      title,
+            'mediatype': 'video',
+        })
         li.setProperty('IsPlayable', 'true')
         url = '{}?action=play&sport=rugby&url={}'.format(
             base_url, urllib.parse.quote(match['url'], safe='')
         )
         xbmcplugin.addDirectoryItem(handle, url, li, False)
 
+    xbmcplugin.addSortMethod(handle, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(handle)
+    xbmc.executebuiltin('Container.SetViewMode(500)')
 
 
 def _poll_for_url(thread, dialog, timeout_ms=60000):

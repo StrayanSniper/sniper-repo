@@ -6,7 +6,7 @@ import xbmcgui
 import xbmcplugin
 
 
-def list_events(handle, base_url):
+def list_events(handle, base_url, sport_thumb='', fanart=''):
     xbmcgui.Dialog().notification(
         'Sports HQ', 'Boxing streams — coming soon!',
         xbmcgui.NOTIFICATION_INFO, 4000

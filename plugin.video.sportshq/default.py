@@ -1,25 +1,33 @@
 """
 plugin.video.sportshq — Sports HQ
-Main menu: Rugby Union/League, UFC, Boxing.
+Tile-based main menu: Rugby Union/League, UFC, Boxing.
 """
 
 import sys
+import os
 import urllib.parse
 
 import xbmc
 import xbmcgui
 import xbmcplugin
 import xbmcaddon
+import xbmcvfs
 
-ADDON    = xbmcaddon.Addon()
-HANDLE   = int(sys.argv[1])
-BASE_URL = sys.argv[0]
-PARAMS   = urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[2]).query)
+ADDON      = xbmcaddon.Addon()
+HANDLE     = int(sys.argv[1])
+BASE_URL   = sys.argv[0]
+PARAMS     = urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[2]).query)
+ADDON_PATH = ADDON.getAddonInfo('path')
+FANART     = ADDON.getAddonInfo('fanart')
+ICON       = ADDON.getAddonInfo('icon')
+
+def _img(filename):
+    return os.path.join(ADDON_PATH, 'resources', 'images', filename)
 
 SPORTS = [
-    ('rugby',  'Rugby Union / League'),
-    ('ufc',    'UFC'),
-    ('boxing', 'Boxing'),
+    ('rugby',  'Rugby Union / League', _img('rugby.png')),
+    ('ufc',    'UFC',                  _img('ufc.png')),
+    ('boxing', 'Boxing',               _img('boxing.png')),
 ]
 
 
@@ -29,26 +37,52 @@ def _param(key):
 
 
 def main_menu():
-    xbmcplugin.setContent(HANDLE, 'files')
-    for sport_id, label in SPORTS:
-        li = xbmcgui.ListItem(label=f'[B]{label}[/B]')
-        li.setArt({'thumb': ADDON.getAddonInfo('icon'),
-                   'fanart': ADDON.getAddonInfo('fanart')})
+    xbmcplugin.setPluginCategory(HANDLE, 'Sports HQ')
+    xbmcplugin.setContent(HANDLE, 'videos')
+
+    for sport_id, label, thumb in SPORTS:
+        li = xbmcgui.ListItem(label=label)
+        li.setArt({
+            'thumb':  thumb,
+            'icon':   thumb,
+            'fanart': FANART,
+            'poster': thumb,
+            'banner': thumb,
+        })
+        li.setInfo('video', {
+            'title':   label,
+            'plot':    f'Live {label} streams',
+            'mediatype': 'video',
+        })
         url = f'{BASE_URL}?action=list&sport={sport_id}'
         xbmcplugin.addDirectoryItem(HANDLE, url, li, True)
+
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
+    xbmc.executebuiltin('Container.SetViewMode(500)')
 
 
 def list_sport(sport):
+    sport_thumb = {
+        'rugby':  _img('rugby.png'),
+        'ufc':    _img('ufc.png'),
+        'boxing': _img('boxing.png'),
+    }.get(sport, ICON)
+
+    xbmcplugin.setContent(HANDLE, 'videos')
+
     if sport == 'rugby':
+        xbmcplugin.setPluginCategory(HANDLE, 'Rugby Union / League')
         from scrapers.rugby import list_matches
-        list_matches(HANDLE, BASE_URL)
+        list_matches(HANDLE, BASE_URL, sport_thumb, FANART)
     elif sport == 'ufc':
+        xbmcplugin.setPluginCategory(HANDLE, 'UFC')
         from scrapers.ufc import list_events
-        list_events(HANDLE, BASE_URL)
+        list_events(HANDLE, BASE_URL, sport_thumb, FANART)
     elif sport == 'boxing':
+        xbmcplugin.setPluginCategory(HANDLE, 'Boxing')
         from scrapers.boxing import list_events
-        list_events(HANDLE, BASE_URL)
+        list_events(HANDLE, BASE_URL, sport_thumb, FANART)
     else:
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
