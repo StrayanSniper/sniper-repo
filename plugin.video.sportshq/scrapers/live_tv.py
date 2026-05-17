@@ -34,6 +34,11 @@ if _ADDON_DIR not in sys.path:
 
 import extractor_runner_no_chrome as _extractor
 
+# In-process session registry: match_url -> _ProxySession
+# Populated during pre-extraction, alive for the grace period
+_live_sessions = {}
+_live_sessions_lock = threading.Lock()
+
 _BASE    = 'https://rugbybox.me'
 _HEADERS = {
     'User-Agent': (
@@ -166,22 +171,61 @@ def _get_all_sections():
 # Kodi list
 # ---------------------------------------------------------------------------
 
+def _preextract_all(streams, dialog):
+    """
+    Pre-extract all streams in parallel while the loading dialog is open.
+    Each stream gets its own independent _ProxySession.
+    """
+    total   = len(streams)
+    done    = [0]
+    lock    = threading.Lock()
+    errors  = []
+
+    def _do_one(stream):
+        url = stream['url']
+        try:
+            sess = _extractor.create_session(url)
+            with _live_sessions_lock:
+                _live_sessions[url] = sess
+            _cache_write(url, sess.proxy_url)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            with lock:
+                done[0] += 1
+                pct = 20 + int(done[0] / total * 75)
+                try:
+                    dialog.update(pct, f'Preparing streams... {done[0]}/{total}')
+                except Exception:
+                    pass
+
+    threads = [threading.Thread(target=_do_one, args=(s,), daemon=True) for s in streams]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)  # max 30s total wait
+
+
 def list_live_streams(handle, base_url, addon_icon, fanart):
-    # Scrape all streams
     dialog = xbmcgui.DialogProgress()
     dialog.create('Sports HQ', 'Finding live streams...')
-    dialog.update(20)
+    dialog.update(10)
 
     streams = _get_all_sections()
-    dialog.close()
 
     if not streams:
+        dialog.close()
         xbmcgui.Dialog().notification(
             'Sports HQ', 'No live streams found right now',
             xbmcgui.NOTIFICATION_INFO, 4000
         )
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
+
+    # Pre-extract ALL streams in parallel while dialog is open
+    dialog.update(20, f'Found {len(streams)} stream(s) — loading...')
+    _preextract_all(streams, dialog)
+    dialog.close()
 
     xbmcplugin.setContent(handle, 'videos')
 
@@ -283,11 +327,14 @@ def _play_url(handle, stream_url):
         timeout += 1
     while player.isPlaying() and not monitor.abortRequested():
         xbmc.sleep(1000)
-    # Grace period — proxy stays alive so the next channel click is instant
+    # Grace period — all pre-extracted proxies stay alive for channel surfing
     grace = _GRACE_PERIOD_S
     while grace > 0 and not monitor.abortRequested():
         xbmc.sleep(1000)
         grace -= 1
+    # Clean up sessions
+    with _live_sessions_lock:
+        _live_sessions.clear()
 
 
 def _poll_for_url(thread, dialog, timeout_ms=60000):
@@ -322,15 +369,22 @@ def _poll_for_url(thread, dialog, timeout_ms=60000):
 def play_stream(handle, match_url):
     xbmc.log(f'[sportshq/livetv] play: {match_url}', xbmc.LOGINFO)
 
-    # Fast path — reuse proxy from a recent previous session
+    # 1. Same-invocation in-memory session (pre-extracted during list load)
+    with _live_sessions_lock:
+        sess = _live_sessions.get(match_url)
+    if sess and sess.proxy_url and _proxy_alive(sess.proxy_url):
+        xbmc.log(f'[sportshq/livetv] instant: {sess.proxy_url}', xbmc.LOGINFO)
+        _play_url(handle, sess.proxy_url)
+        return
+
+    # 2. File cache from a previous invocation's grace period
     cached = _cached_proxy(match_url)
     if cached:
         xbmc.log(f'[sportshq/livetv] cache hit: {cached}', xbmc.LOGINFO)
         _play_url(handle, cached)
         return
 
-    # Slow path — full extraction
-    _extractor.shutdown_proxy()
+    # 3. Full extraction
     try:
         os.remove(_TEMP_FILE)
     except OSError:

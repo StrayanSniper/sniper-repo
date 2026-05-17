@@ -1,13 +1,9 @@
 """
 extractor_runner_no_chrome.py — casthill.net stream extractor for rugbybox.me.
 
-The CDN (peulleieo.net) binds auth parameters (u_id, ssid) in segment/key
-URLs only for the HTTP session that called boanki.net.  A local proxy is
-therefore required: it fetches the CDN playlist with the authenticated
-Python session, rewrites all URLs to go through itself, and serves them to
-Kodi's ffmpegdirect player.
-
-Port is chosen randomly from free OS ports to avoid any Android conflicts.
+Supports multiple independent simultaneous stream sessions via _ProxySession.
+Each session has its own CDN session, HLS proxy, and segment cache — allowing
+parallel pre-extraction of all channels when the Live Streams list loads.
 """
 
 import re
@@ -37,41 +33,172 @@ UA = (
 )
 
 PLAYLIST_TTL      = 2.0
-PREFETCH_COUNT    = 6    # segments to pre-fetch ahead of current position
-SESSION_REFRESH_S = 270  # re-run casthill/boanki every 4.5 minutes
-
-# ---------------------------------------------------------------------------
-# Proxy state  (module-level so daemon threads can access it)
-# ---------------------------------------------------------------------------
-
-_cdn_session   = _requests.Session()
-_cdn_media_url = None
-_cdn_base      = None
-_proxy_server  = None
-_current_match = None   # stored so the refresh thread can re-run the pipeline
-_refresh_lock  = threading.Lock()
-
-_playlist_cache      = {'text': None, 'expires': 0.0}
-_playlist_cache_lock = threading.Lock()
-
-_seg_cache      = {}
-_seg_cache_lock = threading.Lock()
+PREFETCH_COUNT    = 6
+SESSION_REFRESH_S = 270
 
 
 # ---------------------------------------------------------------------------
-# Proxy lifecycle
+# Per-stream session  (independent CDN session + proxy + segment cache)
 # ---------------------------------------------------------------------------
 
-def shutdown_proxy():
-    global _proxy_server
-    if _proxy_server is not None:
+class _ProxySession:
+    """Encapsulates one fully independent extracted stream."""
+
+    def __init__(self):
+        self.cdn_session     = _requests.Session()
+        self.cdn_media_url   = None
+        self.cdn_base        = None
+        self.proxy_server    = None
+        self.proxy_url       = None
+        self.match_url       = None
+        self._playlist_cache = {'text': None, 'expires': 0.0}
+        self._playlist_lock  = threading.Lock()
+        self._seg_cache      = {}
+        self._seg_cache_lock = threading.Lock()
+
+    # -- CDN playlist -------------------------------------------------------
+
+    def get_playlist(self) -> str:
+        now = time.time()
+        with self._playlist_lock:
+            if self._playlist_cache['text'] and now < self._playlist_cache['expires']:
+                return self._playlist_cache['text']
+        text = self.cdn_session.get(self.cdn_media_url, timeout=8).text
+        with self._playlist_lock:
+            self._playlist_cache['text']    = text
+            self._playlist_cache['expires'] = now + PLAYLIST_TTL
+        return text
+
+    def invalidate_playlist(self):
+        with self._playlist_lock:
+            self._playlist_cache['text']    = None
+            self._playlist_cache['expires'] = 0.0
+
+    # -- Segment cache ------------------------------------------------------
+
+    def prefetch_seg(self, url: str):
+        with self._seg_cache_lock:
+            if url in self._seg_cache:
+                return
+            self._seg_cache[url] = None
         try:
-            _proxy_server.shutdown()
-            _proxy_server.server_close()
+            data = self.cdn_session.get(url, timeout=30).content
+            with self._seg_cache_lock:
+                self._seg_cache[url] = data
+        except Exception:
+            with self._seg_cache_lock:
+                self._seg_cache.pop(url, None)
+
+    def get_seg(self, url: str) -> bytes:
+        for _ in range(60):
+            with self._seg_cache_lock:
+                if url in self._seg_cache:
+                    val = self._seg_cache[url]
+                    if val is not None:
+                        del self._seg_cache[url]
+                        return val
+                else:
+                    break
+            time.sleep(0.5)
+        return self.cdn_session.get(url, timeout=30).content
+
+    def trigger_prefetch(self, current_url: str):
+        try:
+            seg_urls = [
+                _abs_url(l.strip(), self.cdn_base)
+                for l in self.get_playlist().splitlines()
+                if l.strip() and not l.startswith('#')
+            ]
+            try:
+                idx = next(i for i, u in enumerate(seg_urls) if u == current_url)
+                upcoming = seg_urls[idx + 1: idx + 1 + PREFETCH_COUNT]
+            except StopIteration:
+                upcoming = seg_urls[:PREFETCH_COUNT]
+            for u in upcoming:
+                with self._seg_cache_lock:
+                    if u not in self._seg_cache:
+                        threading.Thread(target=self.prefetch_seg, args=(u,), daemon=True).start()
         except Exception:
             pass
-        _proxy_server = None
 
+    def prefetch_initial(self):
+        time.sleep(0.2)
+        try:
+            seg_urls = [
+                _abs_url(l.strip(), self.cdn_base)
+                for l in self.get_playlist().splitlines()
+                if l.strip() and not l.startswith('#')
+            ]
+            for u in seg_urls[:PREFETCH_COUNT]:
+                with self._seg_cache_lock:
+                    if u not in self._seg_cache:
+                        threading.Thread(target=self.prefetch_seg, args=(u,), daemon=True).start()
+        except Exception:
+            pass
+
+    # -- Proxy lifecycle ----------------------------------------------------
+
+    def start_proxy(self) -> str:
+        port = _find_free_port()
+        srv  = _ProxyServer(('127.0.0.1', port), _ProxyHandler)
+        srv.session = self
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.proxy_server = srv
+        self.proxy_url    = f'http://127.0.0.1:{port}/playlist.m3u8'
+        threading.Thread(target=self.prefetch_initial, daemon=True).start()
+        return self.proxy_url
+
+    def shutdown(self):
+        if self.proxy_server:
+            try:
+                self.proxy_server.shutdown()
+                self.proxy_server.server_close()
+            except Exception:
+                pass
+            self.proxy_server = None
+
+    def refresh(self):
+        """Re-run pipeline and update this session's CDN credentials."""
+        if not self.match_url:
+            return
+        try:
+            new_sess, media_url = _run_pipeline(self.match_url)
+            self.cdn_session   = new_sess
+            self.cdn_media_url = media_url
+            self.cdn_base      = _base_of(media_url)
+            self.invalidate_playlist()
+            with self._seg_cache_lock:
+                self._seg_cache.clear()
+            print('[extractor] Session refreshed OK', file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f'[extractor] Session refresh failed: {exc}', file=sys.stderr, flush=True)
+
+    def start_refresh_loop(self):
+        def _loop():
+            while True:
+                time.sleep(SESSION_REFRESH_S)
+                if self.proxy_server:
+                    self.refresh()
+        threading.Thread(target=_loop, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Single global session  (for backward-compat / rugbystreams plugin)
+# ---------------------------------------------------------------------------
+
+_current_session: _ProxySession = None
+
+
+def shutdown_proxy():
+    global _current_session
+    if _current_session:
+        _current_session.shutdown()
+        _current_session = None
+
+
+# ---------------------------------------------------------------------------
+# Proxy server + handler
+# ---------------------------------------------------------------------------
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -79,150 +206,18 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-# ---------------------------------------------------------------------------
-# CDN helpers
-# ---------------------------------------------------------------------------
+class _ProxyServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+    session: _ProxySession = None
 
-def _base_of(url: str) -> str:
-    return url.split('?')[0].rsplit('/', 1)[0] + '/'
+    def server_bind(self):
+        if hasattr(socket, 'SO_REUSEPORT'):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
-
-def _abs_url(url: str, base: str) -> str:
-    if url.startswith('http'):
-        return url
-    if url.startswith('//'):
-        return 'https:' + url
-    if url.startswith('/'):
-        p = urllib.parse.urlparse(base)
-        return f'{p.scheme}://{p.netloc}{url}'
-    return base + url
-
-
-def _prefetch_seg(url: str):
-    with _seg_cache_lock:
-        if url in _seg_cache:
-            return
-        _seg_cache[url] = None  # mark in-progress
-    try:
-        data = _cdn_session.get(url, timeout=30).content
-        with _seg_cache_lock:
-            _seg_cache[url] = data
-    except Exception:
-        with _seg_cache_lock:
-            _seg_cache.pop(url, None)
-
-
-def _get_seg(url: str) -> bytes:
-    for _ in range(60):
-        with _seg_cache_lock:
-            if url in _seg_cache:
-                val = _seg_cache[url]
-                if val is not None:
-                    del _seg_cache[url]
-                    return val
-            else:
-                break
-        time.sleep(0.5)
-    return _cdn_session.get(url, timeout=30).content
-
-
-def _prefetch_initial_segments():
-    """Pre-fetch first segments immediately at proxy start to cut playback startup time."""
-    time.sleep(0.2)
-    try:
-        playlist = _get_cdn_playlist()
-        seg_urls = [
-            _abs_url(l.strip(), _cdn_base)
-            for l in playlist.splitlines()
-            if l.strip() and not l.startswith('#')
-        ]
-        for u in seg_urls[:PREFETCH_COUNT]:
-            with _seg_cache_lock:
-                if u not in _seg_cache:
-                    threading.Thread(target=_prefetch_seg, args=(u,), daemon=True).start()
-    except Exception:
-        pass
-
-
-def _trigger_prefetch(current_url: str):
-    try:
-        playlist = _get_cdn_playlist()
-        seg_urls = [
-            _abs_url(l.strip(), _cdn_base)
-            for l in playlist.splitlines()
-            if l.strip() and not l.startswith('#')
-        ]
-        try:
-            idx = next(i for i, u in enumerate(seg_urls) if u == current_url)
-            upcoming = seg_urls[idx + 1: idx + 1 + PREFETCH_COUNT]
-        except StopIteration:
-            upcoming = seg_urls[:PREFETCH_COUNT]
-        for u in upcoming:
-            with _seg_cache_lock:
-                if u not in _seg_cache:
-                    threading.Thread(target=_prefetch_seg, args=(u,), daemon=True).start()
-    except Exception:
-        pass
-
-
-def _get_cdn_playlist() -> str:
-    now = time.time()
-    with _playlist_cache_lock:
-        if _playlist_cache['text'] and now < _playlist_cache['expires']:
-            return _playlist_cache['text']
-    text = _cdn_session.get(_cdn_media_url, timeout=8).text
-    with _playlist_cache_lock:
-        _playlist_cache['text']    = text
-        _playlist_cache['expires'] = now + PLAYLIST_TTL
-    return text
-
-
-def _rewrite_playlist(text: str, proxy_base: str) -> str:
-    out = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('#EXT-X-KEY:'):
-            def _rk(m):
-                raw_uri = m.group(1)
-                abs_uri = _abs_url(raw_uri, _cdn_base)
-                return f'URI="{proxy_base}/key?url={urllib.parse.quote(abs_uri, safe="")}"'
-            line = re.sub(r'URI="([^"]*)"', _rk, line)
-        elif stripped and not stripped.startswith('#'):
-            abs_seg = _abs_url(stripped, _cdn_base)
-            line = f'{proxy_base}/seg?url={urllib.parse.quote(abs_seg, safe="")}'
-        out.append(line)
-    return '\r\n'.join(out)
-
-
-def _best_variant_url(master_url: str) -> str:
-    text     = _cdn_session.get(master_url, timeout=20).text
-    cdn_host = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
-    base     = _base_of(master_url)
-    best_url, best_bw = None, -1
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith('#EXT-X-STREAM-INF:'):
-            bw   = int(m.group(1)) if (m := re.search(r'BANDWIDTH=(\d+)', line)) else 0
-            j    = i + 1
-            while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
-                j += 1
-            if j < len(lines):
-                variant = lines[j].strip()
-                if variant.startswith('/'):
-                    variant = cdn_host + variant
-                elif not variant.startswith('http'):
-                    variant = base + variant
-                if bw > best_bw:
-                    best_bw, best_url = bw, variant
-        i += 1
-    return best_url or master_url
-
-
-# ---------------------------------------------------------------------------
-# Proxy HTTP handler
-# ---------------------------------------------------------------------------
 
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -232,38 +227,35 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         parsed     = urllib.parse.urlparse(self.path)
         qs         = urllib.parse.parse_qs(parsed.query)
         proxy_base = f'http://127.0.0.1:{self.server.server_address[1]}'
+        sess       = self.server.session
 
         if parsed.path == '/shutdown':
-            self.send_response(200)
-            self.end_headers()
+            self.send_response(200); self.end_headers()
             threading.Thread(target=self.server.shutdown, daemon=True).start()
 
         elif parsed.path == '/playlist.m3u8':
             try:
                 body = _rewrite_playlist(
-                    _get_cdn_playlist(), proxy_base
+                    sess.get_playlist(), proxy_base, sess.cdn_base
                 ).encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
                 self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.end_headers(); self.wfile.write(body)
             except Exception as exc:
                 print(f'[proxy] playlist error: {exc}', file=sys.stderr, flush=True)
-                self.send_response(502)
-                self.end_headers()
+                self.send_response(502); self.end_headers()
 
         elif parsed.path == '/key':
             key_url = qs.get('url', [None])[0]
             if not key_url:
                 self.send_response(400); self.end_headers(); return
             try:
-                data = _cdn_session.get(urllib.parse.unquote(key_url), timeout=20).content
+                data = sess.cdn_session.get(urllib.parse.unquote(key_url), timeout=10).content
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
                 self.send_header('Content-Length', str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                self.end_headers(); self.wfile.write(data)
             except Exception as exc:
                 print(f'[proxy] key error: {exc}', file=sys.stderr, flush=True)
                 self.send_response(502); self.end_headers()
@@ -273,32 +265,55 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not seg_url:
                 self.send_response(400); self.end_headers(); return
             try:
-                actual_url = urllib.parse.unquote(seg_url)
-                data = _get_seg(actual_url)
+                actual = urllib.parse.unquote(seg_url)
+                data   = sess.get_seg(actual)
                 self.send_response(200)
                 self.send_header('Content-Type', 'video/mp2t')
                 self.send_header('Content-Length', str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                threading.Thread(target=_trigger_prefetch, args=(actual_url,), daemon=True).start()
+                self.end_headers(); self.wfile.write(data)
+                threading.Thread(target=sess.trigger_prefetch, args=(actual,), daemon=True).start()
             except Exception as exc:
                 print(f'[proxy] seg error: {exc}', file=sys.stderr, flush=True)
-                self.send_response(502); self.end_headers()
+                try:
+                    self.send_response(502); self.end_headers()
+                except Exception:
+                    pass
 
         else:
             self.send_response(404); self.end_headers()
 
 
-class _ProxyServer(http.server.ThreadingHTTPServer):
-    allow_reuse_address = True
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
 
-    def server_bind(self):
-        if hasattr(socket, 'SO_REUSEPORT'):
-            try:
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            except OSError:
-                pass
-        super().server_bind()
+def _abs_url(url: str, base: str) -> str:
+    if url.startswith('http'):  return url
+    if url.startswith('//'): return 'https:' + url
+    if url.startswith('/'):
+        p = urllib.parse.urlparse(base)
+        return f'{p.scheme}://{p.netloc}{url}'
+    return base + url
+
+
+def _base_of(url: str) -> str:
+    return url.split('?')[0].rsplit('/', 1)[0] + '/'
+
+
+def _rewrite_playlist(text: str, proxy_base: str, cdn_base: str) -> str:
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#EXT-X-KEY:'):
+            def _rk(m):
+                abs_uri = _abs_url(m.group(1), cdn_base)
+                return f'URI="{proxy_base}/key?url={urllib.parse.quote(abs_uri, safe="")}"'
+            line = re.sub(r'URI="([^"]*)"', _rk, line)
+        elif stripped and not stripped.startswith('#'):
+            abs_seg = _abs_url(stripped, cdn_base)
+            line    = f'{proxy_base}/seg?url={urllib.parse.quote(abs_seg, safe="")}'
+        out.append(line)
+    return '\r\n'.join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -326,10 +341,8 @@ def _fetch(session, url: str, referer: str = '', **kwargs):
         raw = r.content
         if len(raw) >= 2 and raw[0] == 0x1f and raw[1] == 0x8b:
             import gzip
-            try:
-                raw = gzip.decompress(raw)
-            except Exception:
-                pass
+            try: raw = gzip.decompress(raw)
+            except Exception: pass
         return raw.decode('utf-8', errors='replace'), r.status_code
     except Exception as exc:
         print(f'[extractor] fetch error {url}: {exc}', file=sys.stderr, flush=True)
@@ -351,16 +364,13 @@ def _decode_sr(char_list: list) -> str:
 def _extract_embed_vars(html: str) -> dict:
     def _re(pattern, default=None):
         m = re.search(pattern, html)
-        if m:
-            return m.group(1)
-        if default is None:
-            raise ValueError(f'Pattern not found: {pattern}')
+        if m: return m.group(1)
+        if default is None: raise ValueError(f'Pattern not found: {pattern}')
         return default
 
     def _desr(pattern):
         m = re.search(pattern, html)
-        if not m:
-            raise ValueError(f'decodeSr pattern not found: {pattern}')
+        if not m: raise ValueError(f'decodeSr not found: {pattern}')
         return _decode_sr([int(x) for x in m.group(1).split(',')])
 
     vs_raw     = _desr(r'videoSource=bota\(decodeSr\(\[([0-9,]+)\]\)\)')
@@ -373,58 +383,43 @@ def _extract_embed_vars(html: str) -> dict:
     csrf_raw   = _re(r'csrftoken="([^"]+)"')
     csrf_hdr   = _b64d(_b64d(csrf_raw))
     sec_url    = _b64d(_re(r'secTokenUrl=bota\("([^"]+)"\)'))
-
     return {
-        'url_source': url_source,
-        'scode':      scode,
-        'player_id':  player_id,
-        'edge_host':  edge_host,
-        'expire_ts':  expire_ts,
-        'str_unq':    str_unq,
-        'csrf_hdr':   csrf_hdr,
-        'sec_url':    sec_url,
+        'url_source': url_source, 'scode': scode, 'player_id': player_id,
+        'edge_host': edge_host, 'expire_ts': expire_ts, 'str_unq': str_unq,
+        'csrf_hdr': csrf_hdr, 'sec_url': sec_url,
     }
 
 
 def _call_boanki(ev: dict, iframe_url: str, edm: str) -> str:
     qs = urllib.parse.urlencode({
-        'scode':   ev['scode'],
-        'stream':  ev['str_unq'],
-        'expires': ev['expire_ts'],
-        'u_id':    ev['player_id'],
+        'scode': ev['scode'], 'stream': ev['str_unq'],
+        'expires': ev['expire_ts'], 'u_id': ev['player_id'],
         'host_id': ev['edge_host'],
     })
-    auth_url = f"{ev['sec_url']}?{qs}"
     print('[extractor] Calling boanki.net...', file=sys.stderr, flush=True)
-    ra = _requests.get(auth_url, timeout=8, headers={
-        'User-Agent':  UA,
-        'X-CSRF-Auth': ev['csrf_hdr'],
-        'Accept':      'application/json',
-        'Referer':     iframe_url,
-        'Origin':      f'https://{edm}',
+    ra = _requests.get(f"{ev['sec_url']}?{qs}", timeout=8, headers={
+        'User-Agent': UA, 'X-CSRF-Auth': ev['csrf_hdr'],
+        'Accept': 'application/json', 'Referer': iframe_url,
+        'Origin': f'https://{edm}',
     })
     data = ra.json()
     if not data.get('success'):
-        raise RuntimeError(f'boanki.net returned failure: {data}')
+        raise RuntimeError(f'boanki.net failure: {data}')
     device_id = data['device_id']
-    print(f'[extractor] boanki.net OK  device_id={device_id}', file=sys.stderr, flush=True)
+    print(f'[extractor] boanki OK device_id={device_id}', file=sys.stderr, flush=True)
     return device_id
 
 
-# ---------------------------------------------------------------------------
-# Pipeline (shared by initial extract and periodic refresh)
-# ---------------------------------------------------------------------------
-
 def _run_pipeline(match_url: str):
     """
-    Run the full casthill → boanki pipeline.
-    Returns (new_cdn_session, media_url) on success. Raises on failure.
+    Run casthill → boanki pipeline.
+    Returns (new_requests_Session, media_url).  No globals touched.
     """
     print(f'[extractor] Pipeline: {match_url}', file=sys.stderr, flush=True)
     page_sess = _build_scrape_session('https://rugbybox.me/')
     html_page, status = _fetch(page_sess, match_url)
     if not html_page or status != 200:
-        raise RuntimeError(f'match page returned HTTP {status}')
+        raise RuntimeError(f'match page HTTP {status}')
 
     zmid_m = re.search(r'zmid\s*=\s*"([^"]+)"', html_page)
     pid_m  = re.search(r'\bpid\s*=\s*(\d+)', html_page)
@@ -435,23 +430,18 @@ def _run_pipeline(match_url: str):
         sub_links += re.findall(r"href='(/[^']+/stream-\d+)'", html_page)
         found = False
         for sub in sub_links:
-            sub_url  = 'https://rugbybox.me' + sub
-            sub_html, sub_status = _fetch(page_sess, sub_url)
+            sub_html, sub_status = _fetch(page_sess, 'https://rugbybox.me' + sub)
             if sub_html and sub_status == 200:
                 zm = re.search(r'zmid\s*=\s*"([^"]+)"', sub_html)
                 pm = re.search(r'\bpid\s*=\s*(\d+)', sub_html)
                 em = re.search(r'edm\s*=\s*"([^"]+)"', sub_html)
                 if zm and pm and em:
-                    html_page = sub_html
-                    zmid_m, pid_m, edm_m = zm, pm, em
-                    found = True
-                    break
+                    html_page = sub_html; zmid_m, pid_m, edm_m = zm, pm, em
+                    found = True; break
         if not found:
             raise RuntimeError('casthill embed config not found')
 
-    zmid     = zmid_m.group(1)
-    pid      = pid_m.group(1)
-    edm      = edm_m.group(1)
+    zmid     = zmid_m.group(1); pid = pid_m.group(1); edm = edm_m.group(1)
     cat_m    = re.search(r'gameCat\s*=\s*"([^"]+)"', html_page)
     txt_m    = re.search(r'gameText\s*=\s*"([^"]+)"', html_page)
     game_cat = cat_m.group(1) if cat_m else 'sp'
@@ -459,7 +449,7 @@ def _run_pipeline(match_url: str):
     csrf_m   = re.search(r'"csrf"\s*:\s*"([^"]+)"', html_page)
     csrfip_m = re.search(r'"csrf_ip"\s*:\s*"([^"]+)"', html_page)
     if not csrf_m or not csrfip_m:
-        raise RuntimeError('CSRF tokens not found')
+        raise RuntimeError('CSRF not found')
 
     embed_qs   = urllib.parse.urlencode({
         'pid': pid, 'gacat': game_txt, 'gatxt': game_cat,
@@ -471,102 +461,85 @@ def _run_pipeline(match_url: str):
     embed_sess = _build_scrape_session(match_url)
     html_embed, status = _fetch(embed_sess, iframe_url, referer=match_url)
     if not html_embed or status != 200:
-        raise RuntimeError(f'embed page HTTP {status}')
+        raise RuntimeError(f'embed HTTP {status}')
 
     ev        = _extract_embed_vars(html_embed)
     device_id = _call_boanki(ev, iframe_url, edm)
 
-    new_session = _requests.Session()
-    new_session.headers.update({
-        'User-Agent': UA,
-        'Referer':    iframe_url,
-        'Origin':     f'https://{edm}',
-        'Accept':     '*/*',
+    new_sess = _requests.Session()
+    new_sess.headers.update({
+        'User-Agent': UA, 'Referer': iframe_url,
+        'Origin': f'https://{edm}', 'Accept': '*/*',
     })
 
     master_url = ev['url_source'] + f'?u_id={device_id}'
-    print(f'[extractor] Master: {master_url[:80]}...', file=sys.stderr, flush=True)
+    print(f'[extractor] Master: {master_url[:80]}', file=sys.stderr, flush=True)
 
-    # Fetch variant URL using the new session
-    media_url = new_session.get(master_url, timeout=10).text
-    # Parse best variant from master playlist
-    cdn_host = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
-    base = _base_of(master_url)
+    # Fetch + parse master to find best variant
+    master_text = new_sess.get(master_url, timeout=10).text
+    cdn_host    = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
+    base        = _base_of(master_url)
     best_url, best_bw = None, -1
-    lines = media_url.splitlines()
+    lines = master_text.splitlines()
     i = 0
     while i < len(lines):
-        line = lines[i]
-        if line.startswith('#EXT-X-STREAM-INF:'):
-            bw = int(m.group(1)) if (m := re.search(r'BANDWIDTH=(\d+)', line)) else 0
-            j = i + 1
+        if lines[i].startswith('#EXT-X-STREAM-INF:'):
+            bw = int(m.group(1)) if (m := re.search(r'BANDWIDTH=(\d+)', lines[i])) else 0
+            j  = i + 1
             while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
                 j += 1
             if j < len(lines):
-                variant = lines[j].strip()
-                if variant.startswith('/'):
-                    variant = cdn_host + variant
-                elif not variant.startswith('http'):
-                    variant = base + variant
-                if bw > best_bw:
-                    best_bw, best_url = bw, variant
+                v = lines[j].strip()
+                if v.startswith('/'): v = cdn_host + v
+                elif not v.startswith('http'): v = base + v
+                if bw > best_bw: best_bw, best_url = bw, v
         i += 1
     media_url = best_url or master_url
-
     print(f'[extractor] Media: {media_url[:80]}', file=sys.stderr, flush=True)
-    return new_session, media_url
-
-
-def _apply_session(new_session, media_url):
-    """Update globals with a fresh CDN session. Called on init and each refresh."""
-    global _cdn_session, _cdn_media_url, _cdn_base
-    with _refresh_lock:
-        _cdn_session   = new_session
-        _cdn_media_url = media_url
-        _cdn_base      = _base_of(media_url)
-        with _playlist_cache_lock:
-            _playlist_cache['text']    = None
-            _playlist_cache['expires'] = 0.0
-        with _seg_cache_lock:
-            _seg_cache.clear()
-
-
-def _session_refresh_loop():
-    """Daemon thread: re-runs casthill/boanki every SESSION_REFRESH_S seconds."""
-    while True:
-        time.sleep(SESSION_REFRESH_S)
-        if _current_match is None or _proxy_server is None:
-            continue
-        try:
-            print('[extractor] Refreshing CDN session...', file=sys.stderr, flush=True)
-            new_session, media_url = _run_pipeline(_current_match)
-            _apply_session(new_session, media_url)
-            print('[extractor] Session refreshed OK', file=sys.stderr, flush=True)
-        except Exception as exc:
-            print(f'[extractor] Session refresh failed: {exc}', file=sys.stderr, flush=True)
+    return new_sess, media_url
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Public API
 # ---------------------------------------------------------------------------
+
+def create_session(match_url: str) -> _ProxySession:
+    """
+    Full pipeline → returns a ready _ProxySession with proxy running.
+    Independent of all module globals — safe to call concurrently.
+    """
+    new_sess, media_url = _run_pipeline(match_url)
+    sess               = _ProxySession()
+    sess.match_url     = match_url
+    sess.cdn_session   = new_sess
+    sess.cdn_media_url = media_url
+    sess.cdn_base      = _base_of(media_url)
+    sess.start_proxy()
+    sess.start_refresh_loop()
+    return sess
+
 
 def extract(match_url: str, temp_file: str):
-    global _proxy_server, _current_match
+    """
+    Single-stream extraction (used by rugbystreams plugin).
+    Replaces any previous global session.
+    """
+    global _current_session
 
-    shutdown_proxy()
+    # Try to send shutdown to any existing proxy
+    try:
+        import urllib.request as _ureq
+        _ureq.urlopen('http://127.0.0.1:19823/shutdown', timeout=1)
+        time.sleep(0.3)
+    except Exception:
+        pass
 
-    new_session, media_url = _run_pipeline(match_url)
-    _apply_session(new_session, media_url)
-    _current_match = match_url
+    if _current_session:
+        _current_session.shutdown()
 
-    port = _find_free_port()
-    _proxy_server = _ProxyServer(('127.0.0.1', port), _ProxyHandler)
-    threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
-    threading.Thread(target=_session_refresh_loop, daemon=True).start()
-    threading.Thread(target=_prefetch_initial_segments, daemon=True).start()
-    print(f'[extractor] Proxy on port {port}', file=sys.stderr, flush=True)
+    _current_session           = create_session(match_url)
+    _current_session.match_url = match_url
 
-    proxy_url = f'http://127.0.0.1:{port}/playlist.m3u8'
     with open(temp_file, 'w') as f:
-        f.write(proxy_url)
-    print(f'[extractor] Written {proxy_url}', file=sys.stderr, flush=True)
+        f.write(_current_session.proxy_url)
+    print(f'[extractor] Written {_current_session.proxy_url}', file=sys.stderr, flush=True)
