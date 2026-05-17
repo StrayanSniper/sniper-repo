@@ -36,8 +36,9 @@ UA = (
     'Chrome/120.0.0.0 Safari/537.36'
 )
 
-PLAYLIST_TTL   = 2.0
-PREFETCH_COUNT = 6   # segments to pre-fetch ahead of current position
+PLAYLIST_TTL      = 2.0
+PREFETCH_COUNT    = 6    # segments to pre-fetch ahead of current position
+SESSION_REFRESH_S = 270  # re-run casthill/boanki every 4.5 minutes
 
 # ---------------------------------------------------------------------------
 # Proxy state  (module-level so daemon threads can access it)
@@ -47,6 +48,8 @@ _cdn_session   = _requests.Session()
 _cdn_media_url = None
 _cdn_base      = None
 _proxy_server  = None
+_current_match = None   # stored so the refresh thread can re-run the pipeline
+_refresh_lock  = threading.Lock()
 
 _playlist_cache      = {'text': None, 'expires': 0.0}
 _playlist_cache_lock = threading.Lock()
@@ -391,15 +394,15 @@ def _call_boanki(ev: dict, iframe_url: str, edm: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Pipeline (shared by initial extract and periodic refresh)
 # ---------------------------------------------------------------------------
 
-def extract(match_url: str, temp_file: str):
-    global _cdn_media_url, _cdn_base, _proxy_server, _cdn_session
-
-    shutdown_proxy()
-
-    print(f'[extractor] Fetching match page: {match_url}', file=sys.stderr, flush=True)
+def _run_pipeline(match_url: str):
+    """
+    Run the full casthill → boanki pipeline.
+    Returns (new_cdn_session, media_url) on success. Raises on failure.
+    """
+    print(f'[extractor] Pipeline: {match_url}', file=sys.stderr, flush=True)
     page_sess = _build_scrape_session('https://rugbybox.me/')
     html_page, status = _fetch(page_sess, match_url)
     if not html_page or status != 200:
@@ -426,7 +429,7 @@ def extract(match_url: str, temp_file: str):
                     found = True
                     break
         if not found:
-            raise RuntimeError('casthill embed config not found in match page or sub-pages')
+            raise RuntimeError('casthill embed config not found')
 
     zmid     = zmid_m.group(1)
     pid      = pid_m.group(1)
@@ -438,57 +441,110 @@ def extract(match_url: str, temp_file: str):
     csrf_m   = re.search(r'"csrf"\s*:\s*"([^"]+)"', html_page)
     csrfip_m = re.search(r'"csrf_ip"\s*:\s*"([^"]+)"', html_page)
     if not csrf_m or not csrfip_m:
-        raise RuntimeError('CSRF tokens not found in siteConfig')
+        raise RuntimeError('CSRF tokens not found')
 
-    embed_qs = urllib.parse.urlencode({
-        'pid':     pid,
-        'gacat':   game_txt,
-        'gatxt':   game_cat,
-        'v':       zmid,
-        'csrf':    csrf_m.group(1),
-        'csrf_ip': csrfip_m.group(1),
+    embed_qs   = urllib.parse.urlencode({
+        'pid': pid, 'gacat': game_txt, 'gatxt': game_cat,
+        'v': zmid, 'csrf': csrf_m.group(1), 'csrf_ip': csrfip_m.group(1),
     })
     iframe_url = f'https://{edm}/sd0embed/{game_cat}?{embed_qs}'
-    print(f'[extractor] Fetching embed: {iframe_url[:80]}...', file=sys.stderr, flush=True)
+    print(f'[extractor] Embed: {iframe_url[:80]}...', file=sys.stderr, flush=True)
 
     embed_sess = _build_scrape_session(match_url)
     html_embed, status = _fetch(embed_sess, iframe_url, referer=match_url)
     if not html_embed or status != 200:
-        raise RuntimeError(f'embed page returned HTTP {status}')
+        raise RuntimeError(f'embed page HTTP {status}')
 
-    ev = _extract_embed_vars(html_embed)
-    print(f'[extractor] urlSource: {ev["url_source"][:80]}', file=sys.stderr, flush=True)
-
+    ev        = _extract_embed_vars(html_embed)
     device_id = _call_boanki(ev, iframe_url, edm)
 
-    # Build CDN session with correct auth headers for all CDN requests
-    _cdn_session = _requests.Session()
-    _cdn_session.headers.update({
+    new_session = _requests.Session()
+    new_session.headers.update({
         'User-Agent': UA,
         'Referer':    iframe_url,
         'Origin':     f'https://{edm}',
         'Accept':     '*/*',
     })
 
-    master_url     = ev['url_source'] + f'?u_id={device_id}'
-    print(f'[extractor] Fetching master: {master_url[:80]}...', file=sys.stderr, flush=True)
-    media_url      = _best_variant_url(master_url)
-    print(f'[extractor] Media playlist: {media_url[:80]}', file=sys.stderr, flush=True)
+    master_url = ev['url_source'] + f'?u_id={device_id}'
+    print(f'[extractor] Master: {master_url[:80]}...', file=sys.stderr, flush=True)
 
-    _cdn_media_url = media_url
-    _cdn_base      = _base_of(media_url)
+    # Fetch variant URL using the new session
+    media_url = new_session.get(master_url, timeout=20).text
+    # Parse best variant from master playlist
+    cdn_host = urllib.parse.urlparse(master_url).scheme + '://' + urllib.parse.urlparse(master_url).netloc
+    base = _base_of(master_url)
+    best_url, best_bw = None, -1
+    lines = media_url.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('#EXT-X-STREAM-INF:'):
+            bw = int(m.group(1)) if (m := re.search(r'BANDWIDTH=(\d+)', line)) else 0
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
+                j += 1
+            if j < len(lines):
+                variant = lines[j].strip()
+                if variant.startswith('/'):
+                    variant = cdn_host + variant
+                elif not variant.startswith('http'):
+                    variant = base + variant
+                if bw > best_bw:
+                    best_bw, best_url = bw, variant
+        i += 1
+    media_url = best_url or master_url
 
-    # Reset caches for the new session
-    with _playlist_cache_lock:
-        _playlist_cache['text']    = None
-        _playlist_cache['expires'] = 0.0
-    with _seg_cache_lock:
-        _seg_cache.clear()
+    print(f'[extractor] Media: {media_url[:80]}', file=sys.stderr, flush=True)
+    return new_session, media_url
 
-    # Use a random free port — no port conflicts on any platform
+
+def _apply_session(new_session, media_url):
+    """Update globals with a fresh CDN session. Called on init and each refresh."""
+    global _cdn_session, _cdn_media_url, _cdn_base
+    with _refresh_lock:
+        _cdn_session   = new_session
+        _cdn_media_url = media_url
+        _cdn_base      = _base_of(media_url)
+        with _playlist_cache_lock:
+            _playlist_cache['text']    = None
+            _playlist_cache['expires'] = 0.0
+        with _seg_cache_lock:
+            _seg_cache.clear()
+
+
+def _session_refresh_loop():
+    """Daemon thread: re-runs casthill/boanki every SESSION_REFRESH_S seconds."""
+    while True:
+        time.sleep(SESSION_REFRESH_S)
+        if _current_match is None or _proxy_server is None:
+            continue
+        try:
+            print('[extractor] Refreshing CDN session...', file=sys.stderr, flush=True)
+            new_session, media_url = _run_pipeline(_current_match)
+            _apply_session(new_session, media_url)
+            print('[extractor] Session refreshed OK', file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f'[extractor] Session refresh failed: {exc}', file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def extract(match_url: str, temp_file: str):
+    global _proxy_server, _current_match
+
+    shutdown_proxy()
+
+    new_session, media_url = _run_pipeline(match_url)
+    _apply_session(new_session, media_url)
+    _current_match = match_url
+
     port = _find_free_port()
     _proxy_server = _ProxyServer(('127.0.0.1', port), _ProxyHandler)
     threading.Thread(target=_proxy_server.serve_forever, daemon=True).start()
+    threading.Thread(target=_session_refresh_loop, daemon=True).start()
     print(f'[extractor] Proxy on port {port}', file=sys.stderr, flush=True)
 
     proxy_url = f'http://127.0.0.1:{port}/playlist.m3u8'
