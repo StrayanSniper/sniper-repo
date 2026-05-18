@@ -1,25 +1,29 @@
 """
-scrapers/channel_list.py — Custom TV channel list window for Sports HQ.
+scrapers/channel_list.py — TV Channel List for Sports HQ
 
-Opens a full-screen WindowXML styled like a TV channel guide.
-Fixed channel slots 30-40 are populated with live rugbybox.me streams.
-Channels with live proxies play instantly; others extract on click.
+Channel slots:
+  30-40 : Rugby (rugbybox.me via casthill/boanki proxy)
+  41-50 : UFC   (mmastream.me + others via iframe→m3u8)
+  51-60 : Boxing (boxingbox.net + others via iframe→m3u8)
+  61-70 : NBA   (crackstreams.ms + others via iframe→m3u8)
 """
 
 import os
+import re
 import sys
 import threading
 import time
+import urllib.parse
 
 import xbmc
 import xbmcgui
 import xbmcaddon
 import xbmcvfs
 
-_ADDON       = xbmcaddon.Addon()
-_ADDON_DIR   = _ADDON.getAddonInfo('path')
-_ADDON_ICON  = _ADDON.getAddonInfo('icon')
-_KODI_TEMP   = xbmcvfs.translatePath('special://temp/')
+_ADDON      = xbmcaddon.Addon()
+_ADDON_DIR  = _ADDON.getAddonInfo('path')
+_ADDON_ICON = _ADDON.getAddonInfo('icon')
+_KODI_TEMP  = xbmcvfs.translatePath('special://temp/')
 
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
@@ -32,10 +36,16 @@ from scrapers.live_tv import (
     _live_sessions, _live_sessions_lock,
 )
 
-def _img(filename):
-    return os.path.join(_ADDON_DIR, 'resources', 'images', filename)
 
-_LOGO_MAP = [
+def _img(f):
+    return os.path.join(_ADDON_DIR, 'resources', 'images', f)
+
+
+# ---------------------------------------------------------------------------
+# Logo mapping
+# ---------------------------------------------------------------------------
+
+_RUGBY_LOGO_MAP = [
     ('/nrl',                  _img('logo_nrl.png'),          'NRL'),
     ('/england-super-league', _img('logo_super_league.png'), 'Super League'),
     ('/union-6-nations',      _img('logo_6_nations.png'),    'Six Nations'),
@@ -43,91 +53,257 @@ _LOGO_MAP = [
     ('/super-rugby',          _img('logo_super_rugby.png'),  'Super Rugby'),
     ('/rugby-union',          _img('logo_rugby_union.png'),  'Rugby Union'),
 ]
-_DEFAULT_LOGO = _img('rugby.png')
 
-# Channel slot range for live streams
-STREAM_SLOT_START = 30
-STREAM_SLOT_END   = 40
+_SPORT_LOGOS = {
+    'rugby':  _img('rugby.png'),
+    'ufc':    _img('ufc.png'),
+    'boxing': _img('boxing.png'),
+    'nba':    _img('nba.png'),
+}
+
+SLOT_RANGES = {
+    'rugby':  (30, 40),
+    'ufc':    (41, 50),
+    'boxing': (51, 60),
+    'nba':    (61, 70),
+}
+
+
+def _rugby_logo(url):
+    url_lower = (url or '').lower()
+    for pattern, logo, label in _RUGBY_LOGO_MAP:
+        if pattern in url_lower:
+            return logo, label
+    return _img('rugby.png'), 'Rugby'
 
 
 # ---------------------------------------------------------------------------
-# Channel data helpers
+# Non-rugby stream scrapers (iframe → m3u8)
+# ---------------------------------------------------------------------------
+
+_UA = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/120.0.0.0 Safari/537.36'
+)
+_HEADERS = {'User-Agent': _UA, 'Accept': 'text/html,*/*;q=0.9'}
+
+
+def _http_get(url, referer=''):
+    try:
+        import requests as _req
+        h = {**_HEADERS}
+        if referer:
+            h['Referer'] = referer
+        return _req.get(url, headers=h, timeout=12, verify=False).text
+    except Exception:
+        return ''
+
+
+def _scrape_sport_site(listing_url, base_url, source_name, link_keywords):
+    """Generic scraper for crackstreams-style listing pages."""
+    streams = []
+    html    = _http_get(listing_url)
+    if not html:
+        return streams
+    seen = set()
+    for m in re.finditer(
+        r'href=["\']((?:https?://[^"\']*|/[^"\']+))["\'][^>]*>\s*([^<]{5,80})',
+        html, re.DOTALL
+    ):
+        href  = m.group(1).strip()
+        title = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', m.group(2))).strip()
+        if not href.startswith('http'):
+            href = base_url + href
+        if not any(k in href.lower() for k in link_keywords):
+            continue
+        if href in seen or len(title) < 4:
+            continue
+        seen.add(href)
+        streams.append({'title': title, 'url': href, 'source': source_name})
+    return streams
+
+
+def _get_ufc_streams():
+    streams = []
+    streams += _scrape_sport_site(
+        'https://mmastream.me/ufc-streams',
+        'https://mmastream.me',
+        'MMAStream',
+        ['stream', 'ufc', 'mma', 'fight']
+    )
+    return streams
+
+
+def _get_boxing_streams():
+    streams = []
+    for url in ['https://boxingbox.net/boxing-2024-streams', 'https://boxingbox.net/boxing-streams']:
+        streams += _scrape_sport_site(url, 'https://boxingbox.net', 'BoxingBox', ['stream', 'boxing'])
+        if streams:
+            break
+    return streams
+
+
+def _get_nba_streams():
+    streams = []
+    # crackstreams.ms
+    for listing in ['/nbastreams', '/crackstreams/nba-streams/']:
+        s = _scrape_sport_site(
+            'https://crackstreams.ms' + listing,
+            'https://crackstreams.ms',
+            'CrackStreams',
+            ['stream', 'nba', 'vs', 'thunder', 'lakers', 'celtics', 'spurs', 'heat', 'warriors']
+        )
+        if s:
+            streams += s
+            break
+    # RoxieStreams via JetExtractors
+    try:
+        from scrapers.ufc import _import_jetextractors
+        _jex = _import_jetextractors()
+        if _jex:
+            items = _jex.search_extractors('nba', include=['RoxieStreams'])
+            for item in items:
+                streams.append({
+                    'title':     _to_local_time(item.title),
+                    'url':       None,
+                    'jet_links': item.links,
+                    'source':    item.extractor,
+                })
+    except Exception:
+        pass
+    return streams
+
+
+# ---------------------------------------------------------------------------
+# Non-rugby stream extraction (iframe → m3u8)
+# ---------------------------------------------------------------------------
+
+def _extract_iframe_m3u8(page_url):
+    """Extract m3u8 URL from a crackstreams-style page via iframe."""
+    html = _http_get(page_url, referer=page_url.rsplit('/', 1)[0])
+    if not html:
+        raise RuntimeError('Could not fetch page')
+    iframe_m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    if not iframe_m:
+        raise RuntimeError('No iframe found')
+    iframe_url = iframe_m.group(1)
+    if not iframe_url.startswith('http'):
+        iframe_url = 'https:' + iframe_url if iframe_url.startswith('//') else iframe_url
+
+    iframe_html = _http_get(iframe_url, referer=page_url)
+    if not iframe_html:
+        raise RuntimeError('Could not fetch iframe')
+
+    for pat in [
+        r'source\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'["\']([^"\']+\.m3u8[^"\']*)["\']',
+    ]:
+        m = re.search(pat, iframe_html, re.IGNORECASE)
+        if m:
+            return m.group(1), iframe_url
+    raise RuntimeError('No m3u8 found in iframe')
+
+
+# ---------------------------------------------------------------------------
+# Build channel list
 # ---------------------------------------------------------------------------
 
 def _build_channels():
-    """
-    Build the full channel list.
-    Slots 30-40 filled from rugbybox.me live streams; rest are empty.
-    Returns list of channel dicts.
-    """
     channels = []
+    proxy_cache = _cache_read()
+    now         = time.time()
 
-    # Static channel stubs (to be populated later with FTA/Fox)
-    # Uncomment and fill when real channels are added:
-    # channels += [
-    #     {'number': 1,  'name': 'Fox League',   'logo': ..., 'url': None, 'section': 'Fox Sports', 'programme': ''},
-    # ]
+    # ── Rugby slots 30-40 ──────────────────────────────────────────────────
+    rugby_streams = _stream_list_load() or _get_all_sections()
+    if rugby_streams:
+        _stream_list_save(rugby_streams)
 
-    # Live stream slots 30-40
-    streams      = _stream_list_load() or _get_all_sections()
-    proxy_cache  = _cache_read()
-    now          = time.time()
-
-    if streams:
-        _stream_list_save(streams)
-
-    for i, stream in enumerate(streams):
-        slot = STREAM_SLOT_START + i
-        if slot > STREAM_SLOT_END:
+    start, end = SLOT_RANGES['rugby']
+    for i, stream in enumerate(rugby_streams):
+        slot = start + i
+        if slot > end:
             break
-
-        url     = stream['url']
-        entry   = proxy_cache.get(url, {})
-        p_url   = entry.get('proxy_url', '')
-        fresh   = now - entry.get('saved_at', 0) < _CACHE_MAX_AGE_S
-
-        # Check in-memory sessions first
+        url   = stream['url']
+        entry = proxy_cache.get(url, {})
+        p_url = entry.get('proxy_url', '')
+        fresh = now - entry.get('saved_at', 0) < _CACHE_MAX_AGE_S
         with _live_sessions_lock:
             sess = _live_sessions.get(url)
         if sess and sess.proxy_url and _proxy_alive(sess.proxy_url):
-            status = 'live'
-            play_url = sess.proxy_url
+            status, play_url = 'live', sess.proxy_url
         elif p_url and fresh and _proxy_alive(p_url):
-            status = 'live'
-            play_url = p_url
+            status, play_url = 'live', p_url
         else:
-            status = 'loading'
-            play_url = url  # will extract on click
-
-        logo, sport_label = _logo_and_label(url)
+            status, play_url = 'loading', url
+        logo, sport_label = _rugby_logo(url)
         channels.append({
-            'number':      slot,
-            'name':        _to_local_time(stream['title']),
-            'logo':        logo,
-            'sport_label': sport_label,
-            'url':         url,
-            'play_url':    play_url,
-            'section':     stream.get('section', sport_label),
-            'status':      status,
+            'number': slot, 'name': _to_local_time(stream['title']),
+            'logo': logo, 'sport_label': sport_label,
+            'url': url, 'play_url': play_url,
+            'status': status, 'sport_type': 'rugby',
         })
+    _fill_off_air(channels, SLOT_RANGES['rugby'], _SPORT_LOGOS['rugby'], 'Rugby')
 
-    # Fill remaining slots as Off Air
-    used = len([c for c in channels if c['number'] >= STREAM_SLOT_START])
-    for i in range(used, STREAM_SLOT_END - STREAM_SLOT_START + 1):
-        slot = STREAM_SLOT_START + i
-        channels.append({
-            'number':      slot,
-            'name':        f'Stream {i + 1}',
-            'logo':        _DEFAULT_LOGO,
-            'sport_label': '',
-            'url':         None,
-            'play_url':    None,
-            'section':     '',
-            'status':      'off_air',
-        })
+    # ── UFC slots 41-50 ────────────────────────────────────────────────────
+    _add_sport_slots(channels, _get_ufc_streams(), SLOT_RANGES['ufc'],
+                     _SPORT_LOGOS['ufc'], 'UFC', proxy_cache, now)
+
+    # ── Boxing slots 51-60 ─────────────────────────────────────────────────
+    _add_sport_slots(channels, _get_boxing_streams(), SLOT_RANGES['boxing'],
+                     _SPORT_LOGOS['boxing'], 'Boxing', proxy_cache, now)
+
+    # ── NBA slots 61-70 ────────────────────────────────────────────────────
+    _add_sport_slots(channels, _get_nba_streams(), SLOT_RANGES['nba'],
+                     _SPORT_LOGOS['nba'], 'NBA', proxy_cache, now)
 
     return channels
 
+
+def _add_sport_slots(channels, streams, slot_range, logo, label, proxy_cache, now):
+    start, end = slot_range
+    for i, stream in enumerate(streams):
+        slot = start + i
+        if slot > end:
+            break
+        url      = stream.get('url')
+        source   = stream.get('source', label)
+        title    = f'{stream["title"]}  [{source}]'
+        # Check if already extracted (cached direct URL)
+        p_url = proxy_cache.get(url or '', {}).get('proxy_url', '') if url else ''
+        fresh = now - proxy_cache.get(url or '', {}).get('saved_at', 0) < _CACHE_MAX_AGE_S
+        if p_url and fresh and _proxy_alive(p_url):
+            status, play_url = 'live', p_url
+        else:
+            status, play_url = 'loading', url
+        channels.append({
+            'number': slot, 'name': _to_local_time(title) if ':' in title else title,
+            'logo': logo, 'sport_label': label,
+            'url': url, 'play_url': play_url,
+            'status': status, 'sport_type': stream.get('sport_type', label.lower()),
+            'jet_links': stream.get('jet_links'),
+            'source': source,
+        })
+    _fill_off_air(channels, slot_range, logo, label)
+
+
+def _fill_off_air(channels, slot_range, logo, label):
+    start, end = slot_range
+    used_slots  = {c['number'] for c in channels if start <= c['number'] <= end}
+    for slot in range(start, end + 1):
+        if slot not in used_slots:
+            channels.append({
+                'number': slot, 'name': f'{label} Stream',
+                'logo': logo, 'sport_label': label,
+                'url': None, 'play_url': None,
+                'status': 'off_air', 'sport_type': label.lower(),
+            })
+
+
+# ---------------------------------------------------------------------------
+# Status label / list item
+# ---------------------------------------------------------------------------
 
 def _status_label(channel):
     game = channel.get('name', '')
@@ -135,32 +311,14 @@ def _status_label(channel):
         return f'[COLOR FF44FF88]● LIVE[/COLOR]   {game}'
     elif channel['status'] == 'loading':
         return f'[COLOR FFAAAAAA]⏳ Loading...[/COLOR]   {game}'
-    else:
-        return '[COLOR FF444466]○  Off Air[/COLOR]'
-
-
-def _logo_and_label(url):
-    """Return (logo_path, sport_label) for a stream URL."""
-    url_lower = (url or '').lower()
-    for pattern, logo, label in _LOGO_MAP:
-        if pattern in url_lower:
-            return logo, label
-    return _DEFAULT_LOGO, 'Rugby'
-
-
-def _sport_label(channel):
-    return channel.get('sport_label') or channel.get('section', '')
+    return '[COLOR FF444466]○  Off Air[/COLOR]'
 
 
 def _make_list_item(channel):
-    sport = _sport_label(channel)
-    li = xbmcgui.ListItem(label=sport)   # left column: NRL / Rugby Union
+    li = xbmcgui.ListItem(label=channel.get('sport_label', ''))
     li.setLabel2(f'CH {channel["number"]}')
     li.setArt({'icon': channel['logo'], 'thumb': channel['logo']})
-    li.setInfo('video', {
-        'plot':  '',                       # nothing below the sport label
-        'genre': _status_label(channel),   # right column: ● LIVE 18:25 Penrith vs St George
-    })
+    li.setInfo('video', {'plot': '', 'genre': _status_label(channel)})
     return li
 
 
@@ -169,22 +327,32 @@ def _make_list_item(channel):
 # ---------------------------------------------------------------------------
 
 def _preextract_channel(channel):
-    url = channel['url']
-    if not url:
+    url        = channel.get('url')
+    sport_type = channel.get('sport_type', 'rugby')
+    if not url or channel['status'] == 'live':
         return
-    # Skip if already live
-    if channel['status'] == 'live':
-        return
-    try:
-        sess = _extractor.create_session(url)
-        with _live_sessions_lock:
-            _live_sessions[url] = sess
-        _cache_write(url, sess.proxy_url)
-        channel['play_url'] = sess.proxy_url
-        channel['status']   = 'live'
-        print(f'[channel_list] pre-extracted {url}', file=sys.stderr, flush=True)
-    except Exception as exc:
-        print(f'[channel_list] pre-extract failed {url}: {exc}', file=sys.stderr, flush=True)
+
+    if sport_type == 'rugby':
+        try:
+            sess = _extractor.create_session(url)
+            with _live_sessions_lock:
+                _live_sessions[url] = sess
+            _cache_write(url, sess.proxy_url)
+            channel['play_url'] = sess.proxy_url
+            channel['status']   = 'live'
+        except Exception as exc:
+            xbmc.log(f'[channel_list] rugby pre-extract failed {url}: {exc}', xbmc.LOGWARNING)
+    else:
+        # UFC/Boxing/NBA: iframe → m3u8
+        try:
+            stream_url, referer = _extract_iframe_m3u8(url)
+            headers  = urllib.parse.urlencode({'User-Agent': _UA, 'Referer': referer})
+            full_url = f'{stream_url}|{headers}'
+            _cache_write(url, full_url)
+            channel['play_url'] = full_url
+            channel['status']   = 'live'
+        except Exception as exc:
+            xbmc.log(f'[channel_list] {sport_type} pre-extract failed {url}: {exc}', xbmc.LOGWARNING)
 
 
 # ---------------------------------------------------------------------------
@@ -195,37 +363,23 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.channels      = []
-        self.list_ctrl     = None
-        self._preext_done  = False
+        self.channels  = []
+        self.list_ctrl = None
 
     def onInit(self):
         self.list_ctrl = self.getControl(100)
         self.setProperty('addon_version', f'v{_ADDON.getAddonInfo("version")}')
-        # Return immediately so the window renders — load everything in background
         threading.Thread(target=self._init_async, daemon=True).start()
 
     def _init_async(self):
-        """Runs after the window is visible. Scrapes, populates, pre-extracts."""
-        if not _stream_list_load():
-            streams = _get_all_sections()
-            if streams:
-                _stream_list_save(streams)
-        self._load_channels()
+        self.channels = _build_channels()
+        self._refresh_list()
         self._start_preextraction()
 
-    def _load_channels(self):
-        self.channels = _build_channels()
-        self.list_ctrl.reset()
-        for ch in self.channels:
-            self.list_ctrl.addItem(_make_list_item(ch))
-
     def _start_preextraction(self):
-        """Pre-extract all loading channels in parallel background threads."""
-        loading = [ch for ch in self.channels if ch['status'] == 'loading' and ch['url']]
+        loading = [ch for ch in self.channels if ch['status'] == 'loading' and ch.get('url')]
         if not loading:
             return
-
         def _do_all():
             threads = [
                 threading.Thread(target=_preextract_channel, args=(ch,), daemon=True)
@@ -235,25 +389,21 @@ class ChannelListWindow(xbmcgui.WindowXML):
                 t.start()
             for t in threads:
                 t.join(timeout=30)
-            # Refresh the list once all done
             self._refresh_list()
-
         threading.Thread(target=_do_all, daemon=True).start()
 
     def _refresh_list(self):
-        """Update list items to reflect current extraction status."""
         try:
             pos = self.list_ctrl.getSelectedPosition()
             self.list_ctrl.reset()
-            for ch in self.channels:
+            for ch in sorted(self.channels, key=lambda c: c['number']):
                 self.list_ctrl.addItem(_make_list_item(ch))
-            self.list_ctrl.selectItem(pos)
+            self.list_ctrl.selectItem(max(0, pos))
         except Exception:
             pass
 
     def onAction(self, action):
-        action_id = action.getId()
-        if action_id in (
+        if action.getId() in (
             xbmcgui.ACTION_PREVIOUS_MENU,
             xbmcgui.ACTION_NAV_BACK,
             xbmcgui.ACTION_BACKSPACE,
@@ -266,42 +416,70 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
     def _play_selected(self):
         idx     = self.list_ctrl.getSelectedPosition()
-        channel = self.channels[idx]
+        channel = sorted(self.channels, key=lambda c: c['number'])[idx]
 
-        if not channel['url']:
+        if not channel.get('url') and not channel.get('jet_links'):
             xbmcgui.Dialog().notification('Sports HQ', 'Off Air', xbmcgui.NOTIFICATION_INFO, 2000)
             return
 
         play_url = channel.get('play_url')
 
-        # Fast play from pre-extracted proxy
-        if play_url and play_url.startswith('http://127.0.0.1') and _proxy_alive(play_url):
-            self._play_url(channel, play_url)
-            return
+        # Fast play if already extracted
+        if play_url and ('127.0.0.1' in play_url or '.m3u8' in play_url):
+            if '127.0.0.1' in play_url and not _proxy_alive(play_url):
+                pass  # fall through to fresh extract
+            else:
+                self._play_url(channel, play_url)
+                return
 
-        # Extract now with progress dialog
-        dialog = xbmcgui.DialogProgress()
-        dialog.create('Sports HQ', f'Loading {channel["name"]}...')
+        # Extract now
+        sport_type = channel.get('sport_type', 'rugby')
+        dialog     = xbmcgui.DialogProgress()
+        dialog.create('Sports HQ', f'Loading {channel["name"][:40]}...')
         dialog.update(10)
 
-        result   = [None]
-        error    = [None]
-        temp_f   = os.path.join(_KODI_TEMP, 'sportshq_ch_play.url')
+        result = [None]
+        error  = [None]
 
         def _run():
             try:
-                _extractor.extract(channel['url'], temp_f)
-                with open(temp_f) as f:
-                    result[0] = f.read().strip()
-                _cache_write(channel['url'], result[0])
-                channel['play_url'] = result[0]
-                channel['status']   = 'live'
+                if sport_type == 'rugby':
+                    temp_f = os.path.join(_KODI_TEMP, 'sportshq_ch_play.url')
+                    _extractor.extract(channel['url'], temp_f)
+                    with open(temp_f) as f:
+                        result[0] = f.read().strip()
+                    _cache_write(channel['url'], result[0])
+                    channel['play_url'] = result[0]
+                    channel['status']   = 'live'
+                elif channel.get('jet_links'):
+                    # JetExtractors path (RoxieStreams etc.)
+                    from scrapers.ufc import _import_jetextractors
+                    from jetextractors.models import JetLink
+                    _jex = _import_jetextractors()
+                    if _jex:
+                        for link in channel['jet_links']:
+                            if link.links:
+                                ext = _jex.find_extractor(link)
+                                if ext:
+                                    resolved = ext.get_links(link)
+                                    if resolved:
+                                        result[0] = resolved[0].address
+                                        return
+                            else:
+                                result[0] = link.address
+                                return
+                else:
+                    stream_url, referer = _extract_iframe_m3u8(channel['url'])
+                    headers  = urllib.parse.urlencode({'User-Agent': _UA, 'Referer': referer})
+                    result[0] = f'{stream_url}|{headers}'
+                    _cache_write(channel['url'], result[0])
+                    channel['play_url'] = result[0]
+                    channel['status']   = 'live'
             except Exception as exc:
                 error[0] = str(exc)
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-
         elapsed = 0
         while t.is_alive() and elapsed < 30000:
             if dialog.iscanceled():
@@ -309,24 +487,18 @@ class ChannelListWindow(xbmcgui.WindowXML):
                 return
             xbmc.sleep(200)
             elapsed += 200
-            dialog.update(min(90, 10 + int(elapsed / 300)))
-
+            dialog.update(min(90, 10 + int(elapsed / 333)))
         dialog.close()
 
-        if error[0] or not result[0]:
+        if not result[0]:
             msg = error[0] or 'Stream not found'
-            if any(x in (msg or '') for x in [
-                'embed config not found', 'decodeSr', 'videoSource',
-                'CSRF', 'Pattern not found', 'casthill',
-            ]):
-                msg = 'Stream not live yet — check back when the match starts'
             xbmcgui.Dialog().notification('Sports HQ', msg, xbmcgui.NOTIFICATION_ERROR, 5000)
             return
 
         self._play_url(channel, result[0])
 
-    def _play_url(self, channel, proxy_url):
-        li = xbmcgui.ListItem(channel['name'], path=proxy_url)
+    def _play_url(self, channel, play_url):
+        li = xbmcgui.ListItem(channel.get('name', ''), path=play_url)
         li.setArt({'icon': channel['logo']})
         li.setMimeType('application/vnd.apple.mpegurl')
         li.setContentLookup(False)
@@ -334,7 +506,7 @@ class ChannelListWindow(xbmcgui.WindowXML):
         li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
         li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
         li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
-        xbmc.Player().play(proxy_url, li)
+        xbmc.Player().play(play_url, li)
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +514,6 @@ class ChannelListWindow(xbmcgui.WindowXML):
 # ---------------------------------------------------------------------------
 
 def open_channel_list():
-    """Open the TV channel list window immediately. All loading happens inside onInit."""
     window = ChannelListWindow('ChannelList.xml', _ADDON_DIR, 'default', '720p')
     window.doModal()
     del window
