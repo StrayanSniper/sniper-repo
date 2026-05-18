@@ -23,9 +23,10 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
             from scrapers.ufc import _import_jetextractors
             _jex = _import_jetextractors()
             if _jex:
-                for term in ['nba', 'wnba', 'basketball']:
+                _INCLUDE = ['RoxieStreams', 'StreamEast', 'Buffstreams', 'SportyBite', 'Streamed']
+                for term in ['nba', 'wnba']:
                     try:
-                        items = _jex.search_extractors(term)  # search all extractors
+                        items = _jex.search_extractors(term, include=_INCLUDE)
                         for item in items:
                             results.append({
                                 'title':  item.title or term.upper(),
@@ -44,7 +45,7 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
     threading.Thread(target=_search, daemon=True).start()
 
     elapsed = 0
-    while not done[0] and elapsed < 15000:
+    while not done[0] and elapsed < 30000:
         if dialog.iscanceled():
             dialog.close()
             xbmcplugin.endOfDirectory(handle, succeeded=False)
