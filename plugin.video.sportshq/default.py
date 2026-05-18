@@ -127,7 +127,7 @@ def play_stream(sport, url):
         play_stream(HANDLE, url, _param('title') or 'Boxing')
     elif sport == 'nba':
         from scrapers.nba import play_stream
-        play_stream(HANDLE, url, _param('title') or 'NBA')
+        play_stream(HANDLE, urllib.parse.unquote(url) if url else '', _param('title') or 'NBA')
     elif sport == 'livetv':
         pass  # handled inside ChannelListWindow
     else:
