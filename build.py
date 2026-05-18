@@ -32,6 +32,7 @@ ADDON_DIRS = [
     'plugin.video.rugbystreams',
     'plugin.video.sportshq',
     'script.module.jetextractors',
+    'script.module.pyjsparser',
 ]
 
 # Files/dirs to exclude when zipping
