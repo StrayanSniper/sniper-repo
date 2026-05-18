@@ -235,6 +235,8 @@ def play_stream(handle, payload_json, title='UFC'):
     result = [None]
     done   = [False]
 
+    error_msg = [None]
+
     def _resolve():
         try:
             from jetextractors.models import JetLink
@@ -272,6 +274,7 @@ def play_stream(handle, payload_json, title='UFC'):
                         result[0] = link
                         return
         except Exception as exc:
+            error_msg[0] = str(exc)
             xbmc.log(f'[sportshq/ufc] resolve error: {exc}', xbmc.LOGERROR)
         finally:
             done[0] = True
@@ -291,7 +294,8 @@ def play_stream(handle, payload_json, title='UFC'):
     dialog.close()
 
     if not result[0]:
-        xbmcgui.Dialog().notification('Sports HQ', 'Could not resolve stream', xbmcgui.NOTIFICATION_ERROR, 5000)
+        msg = error_msg[0] or 'Could not resolve stream'
+        xbmcgui.Dialog().ok('Sports HQ', f'Stream error:[CR]{msg}')
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
