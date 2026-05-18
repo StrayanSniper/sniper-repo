@@ -25,12 +25,12 @@ def _img(filename):
     return os.path.join(ADDON_PATH, 'resources', 'images', filename)
 
 SPORTS = [
-    ('livetv', 'Live TV & Streams',    ICON),
+    ('livetv', 'Live TV & Streams',    _img('live_tv.png') if xbmcvfs.exists(_img('live_tv.png')) else ICON),
     ('rugby',  'Rugby Union / League', _img('rugby.png')),
     ('ufc',    'UFC',                  _img('ufc.png')),
     ('boxing', 'Boxing',               _img('boxing.png')),
-    ('nba',    'NBA',                  _img('logo_nba.jpg')),
-    ('tools',  'Tools',                ICON),
+    ('nba',    'NBA',                  _img('nba.png')),
+    ('tools',  'Tools',                _img('tools.png') if xbmcvfs.exists(_img('tools.png')) else ICON),
 ]
 
 ADVANCED_SETTINGS = """<advancedsettings>
@@ -105,7 +105,7 @@ def list_sport(sport):
     elif sport == 'nba':
         xbmcplugin.setPluginCategory(HANDLE, 'NBA')
         from scrapers.nba import list_events
-        list_events(HANDLE, BASE_URL, sport_thumb, FANART)
+        list_events(HANDLE, BASE_URL, _img('nba.png'), FANART)
     else:
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
 
