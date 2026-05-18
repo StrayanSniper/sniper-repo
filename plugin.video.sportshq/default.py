@@ -172,14 +172,11 @@ def check_for_updates():
     xbmcgui.Dialog().notification('Sports HQ', 'Clearing cache and checking for updates...', xbmcgui.NOTIFICATION_INFO, 2000)
     xbmc.executebuiltin('CleanLibrary(video)')
     xbmc.executebuiltin('UpdateAddonRepos(repository.sniper)')
-    # Clear thumbnail cache
+    # Clear thumbnail cache recursively
+    import shutil
     thumb_path = xbmcvfs.translatePath('special://userdata/Thumbnails/')
     try:
-        dirs, files = xbmcvfs.listdir(thumb_path)
-        for d in dirs:
-            xbmcvfs.rmdir(f'{thumb_path}{d}/', force=True)
-        for f in files:
-            xbmcvfs.delete(f'{thumb_path}{f}')
+        shutil.rmtree(thumb_path, ignore_errors=True)
     except Exception:
         pass
     xbmc.sleep(2000)
