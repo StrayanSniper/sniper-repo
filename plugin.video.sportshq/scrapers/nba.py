@@ -23,18 +23,17 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
             from scrapers.ufc import _import_jetextractors
             _jex = _import_jetextractors()
             if _jex:
-                for term in ['nba', 'wnba']:
+                for term in ['nba', 'wnba', 'basketball']:
                     try:
-                        items = _jex.search_extractors(
-                            term,
-                            include=['RoxieStreams', 'StreamEast', 'Buffstreams']
-                        )
+                        items = _jex.search_extractors(term)  # search all extractors
                         for item in items:
                             results.append({
                                 'title':  item.title or term.upper(),
                                 'links':  item.links,
                                 'source': item.extractor,
                             })
+                        if items:
+                            xbmc.log(f'[sportshq/nba] found {len(items)} for "{term}"', xbmc.LOGINFO)
                     except Exception as exc:
                         xbmc.log(f'[sportshq/nba] search "{term}" error: {exc}', xbmc.LOGWARNING)
         except Exception as exc:
@@ -58,8 +57,8 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
 
     if not results:
         xbmcgui.Dialog().notification(
-            'Sports HQ', 'No live NBA games right now — install pytz from Sniper Repo if this keeps happening',
-            xbmcgui.NOTIFICATION_INFO, 5000
+            'Sports HQ', 'No live NBA games found right now',
+            xbmcgui.NOTIFICATION_INFO, 4000
         )
         xbmcplugin.endOfDirectory(handle)
         return
