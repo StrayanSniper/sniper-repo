@@ -1,10 +1,10 @@
 """
 scrapers/nba.py — NBA live streams via crackstreams.ms
-Uses the same casthill/boanki pipeline as rugbybox.me.
+Pipeline: game page → iframe → source m3u8 URL → ffmpegdirect
 """
 
-import os
 import re
+import os
 import sys
 import threading
 import urllib.parse
@@ -17,50 +17,100 @@ import xbmcaddon
 
 _ADDON_DIR = xbmcaddon.Addon().getAddonInfo('path')
 _KODI_TEMP = xbmcvfs.translatePath('special://temp/')
-_TEMP_FILE = os.path.join(_KODI_TEMP, 'sportshq_nba.url')
 
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
 
-import extractor_runner_no_chrome as _extractor
-
 _BASE = 'https://crackstreams.ms'
+_UA   = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/120.0.0.0 Safari/537.36'
+)
 _HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
-    ),
+    'User-Agent':      _UA,
     'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-GB,en;q=0.5',
 }
 
 
-def _get_games():
+def _fetch(url, referer=''):
     try:
         import requests as _req
-        resp = _req.get(f'{_BASE}/nbastreams', headers=_HEADERS, timeout=15, verify=False)
-        html = resp.text
+        h = {**_HEADERS}
+        if referer:
+            h['Referer'] = referer
+        return _req.get(url, headers=h, timeout=15, verify=False).text
+    except Exception as exc:
+        xbmc.log(f'[sportshq/nba] fetch {url}: {exc}', xbmc.LOGWARNING)
+        return ''
+
+
+def _get_games():
+    """Scrape crackstreams.ms for live NBA games."""
+    for listing in ['/nbastreams', '/crackstreams/nba-streams/', '/nba']:
+        html = _fetch(_BASE + listing)
+        if not html:
+            continue
         games = []
         seen  = set()
+        # Find links to individual game/stream pages
         for m in re.finditer(
-            r'href=["\']((?:https?://[^"\']*crackstreams[^"\']*|/[^"\']+))["\'][^>]*>\s*([^<]{5,})',
+            r'href=["\']((?:https?://[^"\']*crackstreams[^"\']*|/[^"\']+))["\'][^>]*>\s*([^<]{5,80})',
             html, re.DOTALL
         ):
             href  = m.group(1).strip()
-            title = re.sub(r'\s+', ' ', m.group(2)).strip()
+            title = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', m.group(2))).strip()
             if not href.startswith('http'):
                 href = _BASE + href
-            if 'stream' not in href.lower() and 'nba' not in href.lower():
+            # Only keep game/stream links
+            if not any(x in href.lower() for x in ['stream', 'nba', 'vs', 'spurs', 'lakers', 'celtics']):
                 continue
-            if href in seen or not title:
+            if href in seen or len(title) < 5:
                 continue
             seen.add(href)
             games.append({'title': title, 'url': href})
-        return games
-    except Exception as exc:
-        xbmc.log(f'[sportshq/nba] scrape error: {exc}', xbmc.LOGWARNING)
-        return []
+        if games:
+            return games
+    return []
+
+
+def _extract_stream(game_url):
+    """
+    Extract HLS URL from a crackstreams game page.
+    Pattern: game page → iframe → source: 'xxx.m3u8'
+    """
+    html = _fetch(game_url, referer=_BASE)
+    if not html:
+        raise RuntimeError('Could not fetch game page')
+
+    # Find iframe
+    iframe_m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    if not iframe_m:
+        raise RuntimeError('No iframe found on game page')
+
+    iframe_url = iframe_m.group(1)
+    if not iframe_url.startswith('http'):
+        iframe_url = 'https:' + iframe_url if iframe_url.startswith('//') else _BASE + iframe_url
+
+    iframe_html = _fetch(iframe_url, referer=game_url)
+    if not iframe_html:
+        raise RuntimeError('Could not fetch iframe page')
+
+    # Find m3u8 URL — various patterns used by crackstreams-type sites
+    for pattern in [
+        r'source\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'src\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'["\']([^"\']+\.m3u8[^"\']*)["\']',
+    ]:
+        m = re.search(pattern, iframe_html, re.IGNORECASE)
+        if m:
+            stream_url = m.group(1)
+            xbmc.log(f'[sportshq/nba] found stream: {stream_url[:80]}', xbmc.LOGINFO)
+            return stream_url, iframe_url
+
+    raise RuntimeError('No m3u8 stream found in iframe page')
 
 
 def list_events(handle, base_url, sport_thumb='', fanart=''):
@@ -80,14 +130,15 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
         return
 
     xbmcplugin.setContent(handle, 'videos')
-
     for game in games:
         li = xbmcgui.ListItem(label=game['title'])
         li.setArt({'thumb': sport_thumb, 'icon': sport_thumb, 'fanart': fanart})
         li.setInfo('video', {'title': game['title'], 'mediatype': 'video'})
         li.setProperty('IsPlayable', 'true')
-        url = '{}?action=play&sport=nba&url={}'.format(
-            base_url, urllib.parse.quote(game['url'], safe='')
+        url = '{}?action=play&sport=nba&url={}&title={}'.format(
+            base_url,
+            urllib.parse.quote(game['url'], safe=''),
+            urllib.parse.quote(game['title'], safe='')
         )
         xbmcplugin.addDirectoryItem(handle, url, li, False)
 
@@ -95,76 +146,53 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
     xbmcplugin.endOfDirectory(handle)
 
 
-def _poll_for_url(thread, dialog, timeout_ms=60000):
-    poll_ms    = 200
-    elapsed_ms = 0
-    while elapsed_ms < timeout_ms:
-        if dialog.iscanceled():
-            return None, True
-        try:
-            with open(_TEMP_FILE, 'r') as f:
-                url = f.read().strip()
-            if url:
-                return url, False
-        except OSError:
-            pass
-        if not thread.is_alive():
-            try:
-                with open(_TEMP_FILE, 'r') as f:
-                    url = f.read().strip()
-                if url:
-                    return url, False
-            except OSError:
-                pass
-            return None, False
-        xbmc.sleep(poll_ms)
-        elapsed_ms += poll_ms
-        dialog.update(min(90, 5 + int(elapsed_ms / timeout_ms * 85)))
-    return None, False
-
-
 def play_stream(handle, match_url, title='NBA'):
     xbmc.log(f'[sportshq/nba] play: {match_url}', xbmc.LOGINFO)
 
-    _extractor.shutdown_proxy()
-    try:
-        os.remove(_TEMP_FILE)
-    except OSError:
-        pass
-
     dialog = xbmcgui.DialogProgress()
     dialog.create('Sports HQ', f'Loading {title}...')
-    dialog.update(5)
+    dialog.update(10)
 
-    error_holder = [None]
+    result = [None]
+    error  = [None]
+    done   = [False]
 
     def _run():
         try:
-            _extractor.extract(match_url, _TEMP_FILE)
+            stream_url, referer = _extract_stream(match_url)
+            result[0] = (stream_url, referer)
         except Exception as exc:
-            error_holder[0] = str(exc)
-            xbmc.log(f'[sportshq/nba] extractor error: {exc}', xbmc.LOGERROR)
+            error[0] = str(exc)
+            xbmc.log(f'[sportshq/nba] extract error: {exc}', xbmc.LOGERROR)
+        finally:
+            done[0] = True
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
-    stream_url, cancelled = _poll_for_url(t, dialog)
+    elapsed = 0
+    while not done[0] and elapsed < 30000:
+        if dialog.iscanceled():
+            dialog.close()
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+        xbmc.sleep(200)
+        elapsed += 200
+        dialog.update(min(90, 10 + int(elapsed / 333)))
+
     dialog.close()
 
-    if cancelled:
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        return
-
-    if not stream_url:
-        msg = error_holder[0] or 'Stream not found'
-        if any(x in (msg or '') for x in ['embed config not found', 'decodeSr', 'casthill', 'CSRF']):
-            msg = 'Stream not live yet — check back when the game starts'
+    if not result[0]:
+        msg = error[0] or 'Stream not found'
         xbmcgui.Dialog().notification('Sports HQ', msg, xbmcgui.NOTIFICATION_ERROR, 7000)
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    xbmc.log(f'[sportshq/nba] play_url={stream_url}', xbmc.LOGINFO)
-    li = xbmcgui.ListItem(path=stream_url)
+    stream_url, referer = result[0]
+    headers_str = urllib.parse.urlencode({'User-Agent': _UA, 'Referer': referer})
+    full_url    = f'{stream_url}|{headers_str}'
+
+    li = xbmcgui.ListItem(path=full_url)
     li.setMimeType('application/vnd.apple.mpegurl')
     li.setContentLookup(False)
     li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
