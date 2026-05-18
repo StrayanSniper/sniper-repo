@@ -33,7 +33,7 @@ SPORTS = [
     ('boxing',  'Boxing',               _img('boxing.png')),
     ('nba',     'NBA',                  _img('nba.png')),
     ('tools',   'Tools',                _img('tools.png') if xbmcvfs.exists(_img('tools.png')) else ICON),
-    ('version', f'Version\n{_VERSION}', ICON),
+    ('version', f'Version\n[B]{_VERSION}[/B]', ''),
 ]
 
 ADVANCED_SETTINGS = """<advancedsettings>

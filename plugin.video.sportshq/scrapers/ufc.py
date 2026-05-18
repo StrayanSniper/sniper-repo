@@ -109,6 +109,58 @@ def _scrape_mmastream():
 
 _JET_INCLUDE = ['RoxieStreams', 'StreamEast', 'Buffstreams', 'SportyBite', 'Streamed']
 
+
+def _resolve_embedsports(embed_url):
+    """
+    Resolve embedsports.me/top URL to HLS stream URL.
+    Only requires pycryptodome — no JetExtractors dependency.
+    """
+    import base64
+    import requests as _req
+
+    # Normalise embedsports.me/sport/event-1 → embedsports.top/sport/event/1
+    m = re.match(r'https?://embedsports\.me/([^/]+)/(.+?)-(\d+)$', embed_url)
+    if m:
+        embed_url = f'https://embedsports.top/{m.group(1)}/{m.group(2)}/{m.group(3)}'
+
+    parts     = embed_url.rstrip('/').split('/')
+    stream_sc = parts[-3]
+    stream_id = parts[-2]
+    stream_no = parts[-1]
+
+    payload = bytes([
+        0x0A, len(stream_sc), *stream_sc.encode('utf-8'),
+        0x12, len(stream_id), *stream_id.encode('utf-8'),
+        0x1A, len(stream_no), *stream_no.encode('utf-8'),
+    ])
+
+    resp = _req.post(
+        'https://embedsports.top/fetch',
+        data=payload,
+        headers={'Content-Type': 'application/octet-stream'},
+        timeout=15,
+        verify=False,
+    )
+
+    b64_len      = resp.content[1]
+    b64_cipher   = resp.content[-b64_len:]
+    b64_decipher = bytes(x - 47 if x >= 0x50 else x + 47 for x in b64_cipher)
+    b64_data     = base64.b64decode(b64_decipher)
+    aes_key      = resp.headers['What'].encode('utf-8')
+    aes_iv       = b'STOPSTOPSTOPSTOP'
+
+    try:
+        from Cryptodome.Cipher import AES
+        from Cryptodome.Util  import Counter
+    except ImportError:
+        from Crypto.Cipher import AES
+        from Crypto.Util   import Counter
+
+    ctr        = Counter.new(128, initial_value=int.from_bytes(aes_iv, 'big'))
+    stream_url = AES.new(aes_key, AES.MODE_CTR, counter=ctr).decrypt(b64_data).decode('utf-8')
+    xbmc.log(f'[sportshq] embedsports resolved: {stream_url[:80]}', xbmc.LOGINFO)
+    return stream_url
+
 def _search_jetextractors():
     results = []
     try:
@@ -239,40 +291,27 @@ def play_stream(handle, payload_json, title='UFC'):
 
     def _resolve():
         try:
-            from jetextractors.models import JetLink
-            _jex = _import_jetextractors()
-            if not _jex:
-                raise RuntimeError('JetExtractors not available')
             if payload['type'] == 'embed':
-                embed_url = payload['url']
-                # Normalise embedsports.me/sport/event-stream-1
-                # → embedsports.top/sport/event-stream/1
-                import re as _re
-                m = _re.match(
-                    r'https?://embedsports\.me/([^/]+)/(.+?)-(\d+)$',
-                    embed_url
-                )
-                if m:
-                    embed_url = f'https://embedsports.top/{m.group(1)}/{m.group(2)}/{m.group(3)}'
-                    xbmc.log(f'[sportshq] normalised embed URL: {embed_url}', xbmc.LOGINFO)
-                link      = JetLink(embed_url)
-                ext       = _jex.find_extractor(link)
-                if ext:
-                    resolved  = ext.get_link(link)
-                    result[0] = resolved
+                stream_url = _resolve_embedsports(payload['url'])
+                if stream_url:
+                    result[0] = stream_url
             else:
-                links = [JetLink.from_dict(d) for d in payload.get('links', [])]
-                for link in links:
-                    if link.links:
-                        ext = _jex.find_extractor(link)
-                        if ext:
-                            resolved = ext.get_links(link)
-                            if resolved:
-                                result[0] = resolved[0]
-                                return
-                    else:
-                        result[0] = link
-                        return
+                # JetExtractors path for non-embed sources
+                _jex = _import_jetextractors()
+                if _jex:
+                    from jetextractors.models import JetLink
+                    links = [JetLink.from_dict(d) for d in payload.get('links', [])]
+                    for link in links:
+                        if link.links:
+                            ext = _jex.find_extractor(link)
+                            if ext:
+                                resolved = ext.get_links(link)
+                                if resolved:
+                                    result[0] = resolved[0].address
+                                    return
+                        else:
+                            result[0] = link.address
+                            return
         except Exception as exc:
             error_msg[0] = str(exc)
             xbmc.log(f'[sportshq/ufc] resolve error: {exc}', xbmc.LOGERROR)
@@ -299,23 +338,12 @@ def play_stream(handle, payload_json, title='UFC'):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    resolved = result[0]
-    li       = xbmcgui.ListItem(label=title, path=resolved.address)
+    stream_url = result[0] if isinstance(result[0], str) else result[0].address
+    li = xbmcgui.ListItem(label=title, path=stream_url)
+    li.setMimeType('application/vnd.apple.mpegurl')
     li.setContentLookup(False)
-
-    if resolved.inputstream:
-        iid = resolved.inputstream.inputstream_id
-        li.setProperty('inputstream', iid)
-        if hasattr(resolved.inputstream, 'manifest_type') and resolved.inputstream.manifest_type:
-            li.setProperty(f'{iid}.manifest_type', resolved.inputstream.manifest_type)
-        if hasattr(resolved.inputstream, 'is_realtime_stream'):
-            li.setProperty(f'{iid}.is_realtime_stream',
-                           'true' if resolved.inputstream.is_realtime_stream else 'false')
-    else:
-        li.setMimeType('application/vnd.apple.mpegurl')
-
-    if resolved.headers:
-        headers_str = '&'.join(f'{k}={urllib.parse.quote(str(v))}' for k, v in resolved.headers.items())
-        li.setPath(f'{resolved.address}|{headers_str}')
-
+    li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
+    li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
+    li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
+    li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
     xbmcplugin.setResolvedUrl(handle, True, li)
