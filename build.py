@@ -31,6 +31,7 @@ ADDON_DIRS = [
     'repository.sniper',
     'plugin.video.rugbystreams',
     'plugin.video.sportshq',
+    'script.module.jetextractors',
 ]
 
 # Files/dirs to exclude when zipping

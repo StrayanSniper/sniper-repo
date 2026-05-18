@@ -40,9 +40,10 @@
       </assets>
     </extension>
   </addon>
-  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.42" provider-name="StrayanSniper">
+  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.43" provider-name="StrayanSniper">
     <requires>
       <import addon="xbmc.python" version="3.0.0" />
+      <import addon="script.module.jetextractors" version="3.3.8e" optional="true" />
     </requires>
     <extension point="xbmc.python.pluginsource" library="default.py">
       <provides>video</provides>
@@ -51,6 +52,30 @@
       <summary lang="en_GB">Sports HQ</summary>
       <description lang="en_GB">Live streams for Rugby Union, Rugby League, UFC and Boxing.</description>
       <platform>all</platform>
+      <assets>
+        <icon>icon.png</icon>
+        <fanart>fanart.jpg</fanart>
+      </assets>
+    </extension>
+  </addon>
+  <addon id="script.module.jetextractors" name="JetExtractors" version="3.3.8e" provider-name="THE TEAM">
+    <requires>
+      <import addon="script.module.requests" />
+      <import addon="script.module.beautifulsoup4" />
+      <import addon="script.module.dateutil" />
+      <import addon="script.module.soupsieve" />
+      <import addon="script.module.pyairtable" />
+      <import addon="script.module.pyamf" />
+      <import addon="script.module.pycryptodome" optional="true" />
+      <import addon="script.module.pyjsparser" />
+    </requires>
+    <extension point="xbmc.python.module" library="lib" />
+    <extension point="xbmc.addon.metadata">
+      <platform>all</platform>
+      <summary lang="en">Jet Extractors</summary>
+      <description lang="en">Jet Extractors</description>
+      <disclaimer lang="en" />
+      <license>MIT</license>
       <assets>
         <icon>icon.png</icon>
         <fanart>fanart.jpg</fanart>
