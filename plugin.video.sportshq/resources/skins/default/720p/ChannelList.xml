@@ -98,13 +98,12 @@
           <left>574</left><top>20</top><width>1</width><height>120</height>
           <texture colordiffuse="22FFFFFF">white.png</texture>
         </control>
-        <!-- Programme / status -->
+        <!-- Programme / status (wraps to 2 lines) -->
         <control type="label">
-          <left>590</left><top>0</top><width>666</width><height>160</height>
+          <left>590</left><top>28</top><width>666</width><height>104</height>
           <label>$INFO[ListItem.Genre]</label>
           <font>font13</font>
           <textcolor>FF888888</textcolor>
-          <aligny>center</aligny>
         </control>
       </itemlayout>
 
@@ -159,13 +158,12 @@
           <left>574</left><top>20</top><width>1</width><height>120</height>
           <texture colordiffuse="44FFFFFF">white.png</texture>
         </control>
-        <!-- Programme / status -->
+        <!-- Programme / status (wraps to 2 lines) -->
         <control type="label">
-          <left>590</left><top>0</top><width>666</width><height>160</height>
+          <left>590</left><top>28</top><width>666</width><height>104</height>
           <label>$INFO[ListItem.Genre]</label>
           <font>font13</font>
           <textcolor>FFEEEEEE</textcolor>
-          <aligny>center</aligny>
         </control>
       </focusedlayout>
 

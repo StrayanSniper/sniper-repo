@@ -84,6 +84,11 @@ def _scrape_mmastream():
         date  = date_map.get(slug, '')
         title = slug.replace('-', ' ').title()
         if date:
+            try:
+                y, m, d = date.split('-')
+                date = f'{d}/{m}/{y[2:]}'
+            except Exception:
+                pass
             title = f'{date}  {title}'
         url   = _BASE_MMA + path
         if url in seen:

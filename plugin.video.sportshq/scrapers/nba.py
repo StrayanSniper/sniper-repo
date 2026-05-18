@@ -134,7 +134,7 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
         threading.Thread(target=fn, daemon=True).start()
 
     elapsed = 0
-    while done[0] < 2 and elapsed < 10000:
+    while done[0] < 2 and elapsed < 25000:
         if dialog.iscanceled():
             dialog.close()
             xbmcplugin.endOfDirectory(handle, succeeded=False)
