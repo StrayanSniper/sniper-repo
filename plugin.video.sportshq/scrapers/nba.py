@@ -84,7 +84,10 @@ _JET_INCLUDE = ['RoxieStreams', 'StreamEast', 'Buffstreams', 'SportyBite', 'Stre
 def _search_jetextractors():
     results = []
     try:
-        from jetextractors import extractor as _jex
+        from scrapers.ufc import _import_jetextractors
+        _jex = _import_jetextractors()
+        if not _jex:
+            return results
         for term in ['nba', 'wnba']:
             items = _jex.search_extractors(term, include=_JET_INCLUDE)
             for item in items:

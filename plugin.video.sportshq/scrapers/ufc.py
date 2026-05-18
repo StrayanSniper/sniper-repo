@@ -11,10 +11,34 @@ import threading
 import urllib.parse
 import urllib.request
 
+import os
+import sys
+
 import xbmc
 import xbmcgui
 import xbmcplugin
 from scrapers.rugby import _to_local_time
+
+
+def _import_jetextractors():
+    """Import jetextractors, adding its addon lib path if needed."""
+    try:
+        from jetextractors import extractor as _jex
+        return _jex
+    except ImportError:
+        pass
+    try:
+        import xbmcaddon
+        je_path = os.path.join(
+            xbmcaddon.Addon('script.module.jetextractors').getAddonInfo('path'), 'lib'
+        )
+        if je_path not in sys.path:
+            sys.path.insert(0, je_path)
+        from jetextractors import extractor as _jex
+        return _jex
+    except Exception as exc:
+        xbmc.log(f'[sportshq] jetextractors not available: {exc}', xbmc.LOGWARNING)
+        return None
 
 _UA = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -77,7 +101,9 @@ _JET_INCLUDE = ['RoxieStreams', 'StreamEast', 'Buffstreams', 'SportyBite', 'Stre
 def _search_jetextractors():
     results = []
     try:
-        from jetextractors import extractor as _jex
+        _jex = _import_jetextractors()
+        if not _jex:
+            return results
         items = _jex.search_extractors('ufc', include=_JET_INCLUDE)
         for item in items:
             results.append({'title': _to_local_time(item.title), 'jet_links': item.links, 'source': item.extractor})
@@ -172,8 +198,6 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
 
 def play_stream(handle, payload_json, title='UFC'):
     import json
-    from jetextractors import extractor as _jex
-    from jetextractors.models import JetLink, JetInputstreamFFmpegDirect
 
     try:
         payload = json.loads(urllib.parse.unquote(payload_json))
@@ -190,12 +214,16 @@ def play_stream(handle, payload_json, title='UFC'):
 
     def _resolve():
         try:
+            from jetextractors.models import JetLink
+            _jex = _import_jetextractors()
+            if not _jex:
+                raise RuntimeError('JetExtractors not available')
             if payload['type'] == 'embed':
                 embed_url = payload['url']
                 link      = JetLink(embed_url)
                 ext       = _jex.find_extractor(link)
                 if ext:
-                    resolved = ext.get_link(link)
+                    resolved  = ext.get_link(link)
                     result[0] = resolved
             else:
                 links = [JetLink.from_dict(d) for d in payload.get('links', [])]
