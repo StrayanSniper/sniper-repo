@@ -154,8 +154,10 @@ def _resolve_embedsports(embed_url):
     b64_len      = resp.content[1]
     b64_cipher   = resp.content[-b64_len:]
     b64_decipher = bytes(x - 47 if x >= 0x50 else x + 47 for x in b64_cipher)
-    b64_padded   = b64_decipher + b'=' * (4 - len(b64_decipher) % 4)
-    b64_data     = base64.b64decode(b64_padded)
+    # Trim to largest multiple of 4 (base64 data length must be 0 mod 4)
+    trim_len = len(b64_decipher) - (len(b64_decipher) % 4)
+    b64_data = base64.b64decode(b64_decipher[:trim_len])
+    xbmc.log(f'[sportshq] b64_cipher_len={len(b64_cipher)} trim_len={trim_len} b64_data_len={len(b64_data)}', xbmc.LOGINFO)
     aes_key      = aes_key_raw.encode('utf-8')
     aes_iv       = b'STOPSTOPSTOPSTOP'
 
