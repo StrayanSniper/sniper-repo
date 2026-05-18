@@ -147,14 +147,15 @@ def _resolve_embedsports(embed_url):
     if resp.status_code != 200:
         raise RuntimeError(f'embedsports.top returned HTTP {resp.status_code}')
 
-    if 'What' not in resp.headers:
-        raise RuntimeError(f'embedsports.top missing What header. Headers: {list(resp.headers.keys())}')
+    aes_key_raw = resp.headers.get('What') or resp.headers.get('Goat')
+    if not aes_key_raw:
+        raise RuntimeError(f'embedsports.top missing key header. Headers: {list(resp.headers.keys())}')
 
     b64_len      = resp.content[1]
     b64_cipher   = resp.content[-b64_len:]
     b64_decipher = bytes(x - 47 if x >= 0x50 else x + 47 for x in b64_cipher)
     b64_data     = base64.b64decode(b64_decipher)
-    aes_key      = resp.headers['What'].encode('utf-8')
+    aes_key      = aes_key_raw.encode('utf-8')
     aes_iv       = b'STOPSTOPSTOPSTOP'
 
     try:
