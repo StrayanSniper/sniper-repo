@@ -55,12 +55,11 @@ _BASE_MMA = 'https://mmastream.me'
 
 def _fetch(url, referer=''):
     try:
+        import requests as _req
         headers = {**_HEADERS}
         if referer:
             headers['Referer'] = referer
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.read().decode('utf-8', errors='replace')
+        return _req.get(url, headers=headers, timeout=10, verify=False).text
     except Exception as exc:
         xbmc.log(f'[sportshq/ufc] fetch error {url}: {exc}', xbmc.LOGWARNING)
         return ''
@@ -73,11 +72,19 @@ def _scrape_mmastream():
     if not html:
         return events
 
+    # Build a date map from the listing page (slug -> date string)
+    date_map = {}
+    for dm in re.finditer(r'(\d{4}-\d{2}-\d{2}).*?href=["\'](/(?:ufc|mma)/([^"\']+)-stream)', html, re.DOTALL):
+        date_map[dm.group(3)] = dm.group(1)
+
     seen = set()
     for m in re.finditer(r'href=["\'](/(?:ufc|mma)/([^"\']+)-stream(?:-\d+)?)["\']', html):
         path  = m.group(1)
         slug  = m.group(2)
+        date  = date_map.get(slug, '')
         title = slug.replace('-', ' ').title()
+        if date:
+            title = f'{date}  {title}'
         url   = _BASE_MMA + path
         if url in seen:
             continue
@@ -86,8 +93,7 @@ def _scrape_mmastream():
         # Fetch event page to get embedsports URL
         event_html = _fetch(url, referer=f'{_BASE_MMA}/ufc-streams')
         em = re.search(r'src=["\']([^"\']*embedsports\.[^"\']+)["\']', event_html)
-        if em:
-            events.append({'title': _to_local_time(title), 'embed_url': em.group(1), 'source': 'MMAStream'})
+        events.append({'title': _to_local_time(title), 'embed_url': em.group(1) if em else None, 'source': 'MMAStream'})
 
     return events
 
@@ -171,19 +177,24 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
 
     import json
     for event in all_events:
-        title  = event.get('title', 'UFC Event')
-        source = event.get('source', '')
-        label  = f'[B]{source}[/B]  {title}'
-        li     = xbmcgui.ListItem(label=label)
+        title     = event.get('title', 'UFC Event')
+        source    = event.get('source', '')
+        embed_url = event.get('embed_url')
+        is_live   = bool(embed_url or event.get('jet_links'))
+
+        label = f'[B]{source}[/B]  {title}' if is_live else f'[COLOR FF888888][B]{source}[/B]  {title}  — Upcoming[/COLOR]'
+        li    = xbmcgui.ListItem(label=label)
         li.setArt({'thumb': sport_thumb, 'icon': sport_thumb, 'fanart': fanart})
         li.setInfo('video', {'title': title, 'plot': f'{source} — {title}', 'mediatype': 'video'})
         li.setProperty('IsPlayable', 'true')
 
-        if 'embed_url' in event:
-            payload = urllib.parse.quote(json.dumps({'type': 'embed', 'url': event['embed_url']}), safe='')
-        else:
-            links = [l.to_dict() for l in event.get('jet_links', [])]
+        if embed_url:
+            payload = urllib.parse.quote(json.dumps({'type': 'embed', 'url': embed_url}), safe='')
+        elif event.get('jet_links'):
+            links   = [l.to_dict() for l in event['jet_links']]
             payload = urllib.parse.quote(json.dumps({'type': 'jet', 'links': links}), safe='')
+        else:
+            payload = urllib.parse.quote(json.dumps({'type': 'upcoming'}), safe='')
 
         url = f'{base_url}?action=play&sport=ufc&url={payload}&title={urllib.parse.quote(title)}'
         xbmcplugin.addDirectoryItem(handle, url, li, False)
@@ -198,6 +209,13 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
 
 def play_stream(handle, payload_json, title='UFC'):
     import json
+    try:
+        if json.loads(urllib.parse.unquote(payload_json)).get('type') == 'upcoming':
+            xbmcgui.Dialog().notification('Sports HQ', 'Stream not live yet — check back when the event starts', xbmcgui.NOTIFICATION_INFO, 5000)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+    except Exception:
+        pass
 
     try:
         payload = json.loads(urllib.parse.unquote(payload_json))

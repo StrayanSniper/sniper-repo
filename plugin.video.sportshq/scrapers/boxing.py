@@ -31,12 +31,11 @@ _BASE_BOX = 'https://boxingbox.net'
 
 def _fetch(url, referer=''):
     try:
+        import requests as _req
         headers = {**_HEADERS}
         if referer:
             headers['Referer'] = referer
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.read().decode('utf-8', errors='replace')
+        return _req.get(url, headers=headers, timeout=10, verify=False).text
     except Exception as exc:
         xbmc.log(f'[sportshq/boxing] fetch error {url}: {exc}', xbmc.LOGWARNING)
         return ''
@@ -67,7 +66,7 @@ def _scrape_boxingbox():
             event_html = _fetch(url, referer=list_url)
             em = re.search(r'src=["\']([^"\']*embedsports\.[^"\']+)["\']', event_html)
             if em:
-                events.append({'title': _to_local_time(title), 'embed_url': em.group(1), 'source': 'BoxingBox'})
+                events.append({'title': _to_local_time(title), 'embed_url': em.group(1) if em else None, 'source': 'BoxingBox'})
 
     return events
 
