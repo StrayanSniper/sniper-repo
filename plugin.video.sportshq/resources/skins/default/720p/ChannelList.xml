@@ -40,12 +40,18 @@
       <aligny>center</aligny>
     </control>
     <control type="label" id="14">
-      <left>1080</left><top>0</top><width>180</width><height>72</height>
+      <left>1080</left><top>6</top><width>180</width><height>32</height>
       <label>$INFO[System.Time]</label>
       <font>font16</font>
       <textcolor>FF888888</textcolor>
       <align>right</align>
-      <aligny>center</aligny>
+    </control>
+    <control type="label" id="15">
+      <left>1080</left><top>40</top><width>180</width><height>26</height>
+      <label>$VAR[addon_version]</label>
+      <font>font12</font>
+      <textcolor>FF333355</textcolor>
+      <align>right</align>
     </control>
 
     <!-- CHANNEL LIST — 160px rows, 150x150 logos, 4 channels visible -->

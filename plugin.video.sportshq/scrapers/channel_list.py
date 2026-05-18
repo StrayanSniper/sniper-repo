@@ -201,6 +201,7 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
     def onInit(self):
         self.list_ctrl = self.getControl(100)
+        self.setProperty('addon_version', f'v{_ADDON.getAddonInfo("version")}')
         # Return immediately so the window renders — load everything in background
         threading.Thread(target=self._init_async, daemon=True).start()
 
