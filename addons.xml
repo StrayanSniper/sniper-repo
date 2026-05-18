@@ -68,6 +68,7 @@
       <import addon="script.module.pyamf" optional="true" />
       <import addon="script.module.pycryptodome" optional="true" />
       <import addon="script.module.pyjsparser" optional="true" />
+      <import addon="script.module.pytz" optional="true" />
     </requires>
     <extension point="xbmc.python.module" library="lib" />
     <extension point="xbmc.addon.metadata">
