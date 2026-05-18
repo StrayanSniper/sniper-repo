@@ -243,6 +243,16 @@ def play_stream(handle, payload_json, title='UFC'):
                 raise RuntimeError('JetExtractors not available')
             if payload['type'] == 'embed':
                 embed_url = payload['url']
+                # Normalise embedsports.me/sport/event-stream-1
+                # → embedsports.top/sport/event-stream/1
+                import re as _re
+                m = _re.match(
+                    r'https?://embedsports\.me/([^/]+)/(.+?)-(\d+)$',
+                    embed_url
+                )
+                if m:
+                    embed_url = f'https://embedsports.top/{m.group(1)}/{m.group(2)}/{m.group(3)}'
+                    xbmc.log(f'[sportshq] normalised embed URL: {embed_url}', xbmc.LOGINFO)
                 link      = JetLink(embed_url)
                 ext       = _jex.find_extractor(link)
                 if ext:
