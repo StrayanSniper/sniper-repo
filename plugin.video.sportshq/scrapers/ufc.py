@@ -72,11 +72,13 @@ def _scrape_mmastream():
 # JetExtractors search
 # ---------------------------------------------------------------------------
 
+_JET_INCLUDE = ['RoxieStreams', 'StreamEast', 'Buffstreams', 'SportyBite', 'Streamed']
+
 def _search_jetextractors():
     results = []
     try:
         from jetextractors import extractor as _jex
-        items = _jex.search_extractors('ufc')
+        items = _jex.search_extractors('ufc', include=_JET_INCLUDE)
         for item in items:
             results.append({'title': _to_local_time(item.title), 'jet_links': item.links, 'source': item.extractor})
     except Exception as exc:
@@ -119,7 +121,7 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
         threading.Thread(target=fn, daemon=True).start()
 
     elapsed = 0
-    while done[0] < 2 and elapsed < 20000:
+    while done[0] < 2 and elapsed < 10000:
         if dialog.iscanceled():
             dialog.close()
             xbmcplugin.endOfDirectory(handle, succeeded=False)
