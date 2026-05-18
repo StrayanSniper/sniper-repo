@@ -136,8 +136,6 @@ def list_tools():
     tools = [
         ('optimise_buffer', '⚙ Optimise Buffering',
          'Write advancedsettings.xml to maximise stream buffer. Run once then restart Kodi.'),
-        ('set_autostart',   '🚀 Set Auto-Start',
-         'Make Kodi open Sports HQ automatically on every launch.'),
         ('check_updates',   '↻ Check for Updates',
          'Check Sniper Repo for addon updates and restart Kodi to apply.'),
     ]
