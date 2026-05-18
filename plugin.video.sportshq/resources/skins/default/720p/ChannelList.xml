@@ -48,59 +48,59 @@
       <aligny>center</aligny>
     </control>
 
-    <!-- CHANNEL LIST — rows 100px tall, square 80x80 logos -->
+    <!-- CHANNEL LIST — 160px rows, 150x150 logos, 4 channels visible -->
     <control type="list" id="100">
       <left>0</left><top>73</top><width>1280</width><height>647</height>
-      <itemheight>100</itemheight>
+      <itemheight>160</itemheight>
       <scrolltime>200</scrolltime>
       <autoscroll time="3000" delay="10000" repeat="20000">false</autoscroll>
       <onleft>100</onleft>
       <onright>100</onright>
 
       <!-- ─── Normal (unfocused) row ─── -->
-      <itemlayout height="100">
+      <itemlayout height="160">
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>99</top><width>1280</width><height>1</height>
+          <left>0</left><top>159</top><width>1280</width><height>1</height>
           <texture colordiffuse="18FFFFFF">white.png</texture>
         </control>
         <!-- Channel number -->
         <control type="label">
-          <left>0</left><top>0</top><width>72</width><height>100</height>
+          <left>20</left><top>0</top><width>72</width><height>160</height>
           <label>$INFO[ListItem.Label2]</label>
           <font>font13</font>
           <textcolor>FF555577</textcolor>
           <align>center</align>
           <aligny>center</aligny>
         </control>
-        <!-- Square channel logo -->
+        <!-- 150x150 square logo -->
         <control type="image">
-          <left>80</left><top>10</top><width>80</width><height>80</height>
+          <left>110</left><top>5</top><width>150</width><height>150</height>
           <texture>$INFO[ListItem.Icon]</texture>
           <aspectratio>keep</aspectratio>
         </control>
-        <!-- Channel name -->
+        <!-- Channel name (sport type e.g. NRL) -->
         <control type="label">
-          <left>176</left><top>18</top><width>300</width><height>32</height>
+          <left>278</left><top>42</top><width>280</width><height>36</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFDDDDDD</textcolor>
         </control>
-        <!-- Sub-label (sport type) -->
+        <!-- Sub-label -->
         <control type="label">
-          <left>176</left><top>54</top><width>300</width><height>28</height>
+          <left>278</left><top>84</top><width>280</width><height>30</height>
           <label>$INFO[ListItem.Plot]</label>
           <font>font12</font>
           <textcolor>FF666688</textcolor>
         </control>
         <!-- Vertical divider -->
         <control type="image">
-          <left>494</left><top>16</top><width>1</width><height>68</height>
+          <left>574</left><top>20</top><width>1</width><height>120</height>
           <texture colordiffuse="22FFFFFF">white.png</texture>
         </control>
         <!-- Programme / status -->
         <control type="label">
-          <left>508</left><top>0</top><width>748</width><height>100</height>
+          <left>590</left><top>0</top><width>666</width><height>160</height>
           <label>$INFO[ListItem.Genre]</label>
           <font>font13</font>
           <textcolor>FF888888</textcolor>
@@ -109,59 +109,59 @@
       </itemlayout>
 
       <!-- ─── Focused (selected) row ─── -->
-      <focusedlayout height="100">
+      <focusedlayout height="160">
         <!-- Selection background -->
         <control type="image">
-          <left>0</left><top>0</top><width>1280</width><height>100</height>
+          <left>0</left><top>0</top><width>1280</width><height>160</height>
           <texture colordiffuse="22FFFFFF">white.png</texture>
         </control>
         <!-- Left accent bar -->
         <control type="image">
-          <left>0</left><top>0</top><width>4</width><height>100</height>
+          <left>0</left><top>0</top><width>4</width><height>160</height>
           <texture colordiffuse="FF2979FF">white.png</texture>
         </control>
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>99</top><width>1280</width><height>1</height>
+          <left>0</left><top>159</top><width>1280</width><height>1</height>
           <texture colordiffuse="33FFFFFF">white.png</texture>
         </control>
         <!-- Channel number -->
         <control type="label">
-          <left>0</left><top>0</top><width>72</width><height>100</height>
+          <left>20</left><top>0</top><width>72</width><height>160</height>
           <label>$INFO[ListItem.Label2]</label>
           <font>font13</font>
           <textcolor>FF2979FF</textcolor>
           <align>center</align>
           <aligny>center</aligny>
         </control>
-        <!-- Square channel logo -->
+        <!-- 150x150 square logo -->
         <control type="image">
-          <left>80</left><top>10</top><width>80</width><height>80</height>
+          <left>110</left><top>5</top><width>150</width><height>150</height>
           <texture>$INFO[ListItem.Icon]</texture>
           <aspectratio>keep</aspectratio>
         </control>
         <!-- Channel name -->
         <control type="label">
-          <left>176</left><top>18</top><width>300</width><height>32</height>
+          <left>278</left><top>42</top><width>280</width><height>36</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFFFFFFF</textcolor>
         </control>
         <!-- Sub-label -->
         <control type="label">
-          <left>176</left><top>54</top><width>300</width><height>28</height>
+          <left>278</left><top>84</top><width>280</width><height>30</height>
           <label>$INFO[ListItem.Plot]</label>
           <font>font12</font>
           <textcolor>FF8888AA</textcolor>
         </control>
         <!-- Vertical divider -->
         <control type="image">
-          <left>494</left><top>16</top><width>1</width><height>68</height>
+          <left>574</left><top>20</top><width>1</width><height>120</height>
           <texture colordiffuse="44FFFFFF">white.png</texture>
         </control>
         <!-- Programme / status -->
         <control type="label">
-          <left>508</left><top>0</top><width>748</width><height>100</height>
+          <left>590</left><top>0</top><width>666</width><height>160</height>
           <label>$INFO[ListItem.Genre]</label>
           <font>font13</font>
           <textcolor>FFEEEEEE</textcolor>
