@@ -14,6 +14,7 @@ import urllib.request
 import xbmc
 import xbmcgui
 import xbmcplugin
+from scrapers.rugby import _to_local_time
 
 _UA = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -62,7 +63,7 @@ def _scrape_mmastream():
         event_html = _fetch(url, referer=f'{_BASE_MMA}/ufc-streams')
         em = re.search(r'src=["\']([^"\']*embedsports\.[^"\']+)["\']', event_html)
         if em:
-            events.append({'title': title, 'embed_url': em.group(1), 'source': 'MMAStream'})
+            events.append({'title': _to_local_time(title), 'embed_url': em.group(1), 'source': 'MMAStream'})
 
     return events
 
@@ -77,7 +78,7 @@ def _search_jetextractors():
         from jetextractors import extractor as _jex
         items = _jex.search_extractors('ufc')
         for item in items:
-            results.append({'title': item.title, 'jet_links': item.links, 'source': item.extractor})
+            results.append({'title': _to_local_time(item.title), 'jet_links': item.links, 'source': item.extractor})
     except Exception as exc:
         xbmc.log(f'[sportshq/ufc] jet search error: {exc}', xbmc.LOGWARNING)
     return results
