@@ -24,13 +24,16 @@ ICON       = ADDON.getAddonInfo('icon')
 def _img(filename):
     return os.path.join(ADDON_PATH, 'resources', 'images', filename)
 
+_VERSION = ADDON.getAddonInfo('version')
+
 SPORTS = [
-    ('livetv', 'Live TV & Streams',    _img('live_tv.png') if xbmcvfs.exists(_img('live_tv.png')) else ICON),
-    ('rugby',  'Rugby Union / League', _img('rugby.png')),
-    ('ufc',    'UFC',                  _img('ufc.png')),
-    ('boxing', 'Boxing',               _img('boxing.png')),
-    ('nba',    'NBA',                  _img('nba.png')),
-    ('tools',  'Tools',                _img('tools.png') if xbmcvfs.exists(_img('tools.png')) else ICON),
+    ('livetv',  'Live TV & Streams',    _img('live_tv.png') if xbmcvfs.exists(_img('live_tv.png')) else ICON),
+    ('rugby',   'Rugby Union / League', _img('rugby.png')),
+    ('ufc',     'UFC',                  _img('ufc.png')),
+    ('boxing',  'Boxing',               _img('boxing.png')),
+    ('nba',     'NBA',                  _img('nba.png')),
+    ('tools',   'Tools',                _img('tools.png') if xbmcvfs.exists(_img('tools.png')) else ICON),
+    ('version', f'Version\n{_VERSION}', ICON),
 ]
 
 ADVANCED_SETTINGS = """<advancedsettings>
@@ -84,7 +87,9 @@ def list_sport(sport):
 
     xbmcplugin.setContent(HANDLE, 'videos')
 
-    if sport == 'tools':
+    if sport == 'version':
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+    elif sport == 'tools':
         list_tools()
     elif sport == 'livetv':
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
