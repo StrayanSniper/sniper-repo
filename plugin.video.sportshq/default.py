@@ -169,12 +169,23 @@ def set_autostart():
 
 
 def check_for_updates():
-    xbmcgui.Dialog().notification('Sports HQ', 'Checking for updates...', xbmcgui.NOTIFICATION_INFO, 2000)
+    xbmcgui.Dialog().notification('Sports HQ', 'Clearing cache and checking for updates...', xbmcgui.NOTIFICATION_INFO, 2000)
+    xbmc.executebuiltin('CleanLibrary(video)')
     xbmc.executebuiltin('UpdateAddonRepos(repository.sniper)')
-    xbmc.sleep(3000)
+    # Clear thumbnail cache
+    thumb_path = xbmcvfs.translatePath('special://userdata/Thumbnails/')
+    try:
+        dirs, files = xbmcvfs.listdir(thumb_path)
+        for d in dirs:
+            xbmcvfs.rmdir(f'{thumb_path}{d}/', force=True)
+        for f in files:
+            xbmcvfs.delete(f'{thumb_path}{f}')
+    except Exception:
+        pass
+    xbmc.sleep(2000)
     restart = xbmcgui.Dialog().yesno(
         'Sports HQ',
-        'Update check complete.[CR][CR]Restart Kodi now to apply any updates?',
+        'Cache cleared and update check complete.[CR][CR]Restart Kodi now to apply any updates?',
         nolabel='Later',
         yeslabel='Restart Now'
     )
