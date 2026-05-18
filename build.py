@@ -34,6 +34,7 @@ ADDON_DIRS = [
     'script.module.jetextractors',
     'script.module.pyjsparser',
     'script.module.pyamf',
+    'script.module.pytz',
 ]
 
 # Files/dirs to exclude when zipping

@@ -39,38 +39,8 @@ def _fetch(url, referer=''):
 
 
 def _scrape_nbabox():
-    events   = []
-    list_url = f'{_BASE_NBA}/watch-nba-2024-online'
-    html     = _fetch(list_url)
-    if not html:
-        return events
-
-    seen = set()
-    for m in re.finditer(
-        r'href=["\'](/([^"\']+)-stream/([^"\']+))["\'].*?>(.*?)</a',
-        html, re.DOTALL
-    ):
-        path    = m.group(1)
-        slug    = m.group(2)
-        league  = m.group(3).upper().replace('-', ' ')
-        raw_title = m.group(4).strip()
-        title   = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', raw_title)).strip()
-        if not title:
-            title = slug.replace('-', ' ').title()
-        url = _BASE_NBA + path
-        if url in seen or not slug:
-            continue
-        seen.add(url)
-
-        event_html = _fetch(url, referer=list_url)
-        em = re.search(r'src=["\']([^"\']*embedsports\.[^"\']+)["\']', event_html)
-        events.append({
-            'title':     _to_local_time(title),
-            'embed_url': em.group(1) if em else None,
-            'source':    f'NBABox ({league})',
-        })
-
-    return events
+    # embedsports protocol changed — disabled, use JetExtractors search
+    return []
 
 
 # ---------------------------------------------------------------------------
