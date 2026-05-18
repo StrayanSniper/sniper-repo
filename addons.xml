@@ -60,14 +60,14 @@
   </addon>
   <addon id="script.module.jetextractors" name="JetExtractors" version="3.3.8e" provider-name="THE TEAM">
     <requires>
-      <import addon="script.module.requests" />
-      <import addon="script.module.beautifulsoup4" />
-      <import addon="script.module.dateutil" />
-      <import addon="script.module.soupsieve" />
-      <import addon="script.module.pyairtable" />
-      <import addon="script.module.pyamf" />
+      <import addon="script.module.requests" optional="true" />
+      <import addon="script.module.beautifulsoup4" optional="true" />
+      <import addon="script.module.dateutil" optional="true" />
+      <import addon="script.module.soupsieve" optional="true" />
+      <import addon="script.module.pyairtable" optional="true" />
+      <import addon="script.module.pyamf" optional="true" />
       <import addon="script.module.pycryptodome" optional="true" />
-      <import addon="script.module.pyjsparser" />
+      <import addon="script.module.pyjsparser" optional="true" />
     </requires>
     <extension point="xbmc.python.module" library="lib" />
     <extension point="xbmc.addon.metadata">
