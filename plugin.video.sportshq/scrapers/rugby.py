@@ -246,8 +246,11 @@ def play_stream(handle, match_url):
 
     if not stream_url:
         msg = error_holder[0] or 'Stream not found'
-        if 'embed config not found' in msg:
-            msg = 'Stream not live yet — no embed found on match page'
+        if any(x in msg for x in [
+            'embed config not found', 'decodeSr', 'videoSource',
+            'CSRF', 'Pattern not found', 'casthill',
+        ]):
+            msg = 'Stream not live yet — check back when the match starts'
         xbmcgui.Dialog().notification(
             'Sports HQ', msg, xbmcgui.NOTIFICATION_ERROR, 7000
         )

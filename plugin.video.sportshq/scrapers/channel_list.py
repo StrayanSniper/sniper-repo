@@ -314,8 +314,11 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
         if error[0] or not result[0]:
             msg = error[0] or 'Stream not found'
-            if 'embed config not found' in (msg or ''):
-                msg = 'Stream not live yet'
+            if any(x in (msg or '') for x in [
+                'embed config not found', 'decodeSr', 'videoSource',
+                'CSRF', 'Pattern not found', 'casthill',
+            ]):
+                msg = 'Stream not live yet — check back when the match starts'
             xbmcgui.Dialog().notification('Sports HQ', msg, xbmcgui.NOTIFICATION_ERROR, 5000)
             return
 

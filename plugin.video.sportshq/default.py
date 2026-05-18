@@ -74,6 +74,12 @@ def main_menu():
     li_buf.setInfo('video', {'title': 'Optimise Buffering', 'plot': 'Write advancedsettings.xml to maximise stream buffer. Run once then restart Kodi.', 'mediatype': 'video'})
     xbmcplugin.addDirectoryItem(HANDLE, f'{BASE_URL}?action=optimise_buffer', li_buf, False)
 
+    # Check for updates tile
+    li_upd = xbmcgui.ListItem(label='[B]↻ Check for Updates[/B]')
+    li_upd.setArt({'thumb': ICON, 'icon': ICON, 'fanart': FANART})
+    li_upd.setInfo('video', {'title': 'Check for Updates', 'plot': 'Check Sniper Repo for addon updates and restart Kodi to apply.', 'mediatype': 'video'})
+    xbmcplugin.addDirectoryItem(HANDLE, f'{BASE_URL}?action=check_updates', li_upd, False)
+
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
     xbmc.executebuiltin('Container.SetViewMode(500)')
@@ -131,6 +137,21 @@ def play_stream(sport, url):
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 
+def check_for_updates():
+    xbmcgui.Dialog().notification('Sports HQ', 'Checking for updates...', xbmcgui.NOTIFICATION_INFO, 2000)
+    xbmc.executebuiltin('UpdateAddonRepos(repository.sniper)')
+    xbmc.sleep(3000)
+    restart = xbmcgui.Dialog().yesno(
+        'Sports HQ',
+        'Update check complete.[CR][CR]Restart Kodi now to apply any updates?',
+        nolabel='Later',
+        yeslabel='Restart Now'
+    )
+    if restart:
+        xbmc.executebuiltin('RestartApp')
+    xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+
+
 def optimise_buffer():
     path = xbmcvfs.translatePath('special://masterprofile/advancedsettings.xml')
     try:
@@ -154,6 +175,8 @@ def router():
         main_menu()
     elif action == 'optimise_buffer':
         optimise_buffer()
+    elif action == 'check_updates':
+        check_for_updates()
     elif action == 'list' and sport:
         list_sport(sport)
     elif action == 'play' and sport:

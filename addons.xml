@@ -40,7 +40,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.31" provider-name="StrayanSniper">
+  <addon id="plugin.video.sportshq" name="Sports HQ" version="1.0.32" provider-name="StrayanSniper">
     <requires>
       <import addon="xbmc.python" version="3.0.0" />
     </requires>
