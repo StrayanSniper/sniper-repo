@@ -152,10 +152,10 @@ def list_tools():
 
 
 def set_autostart():
-    path = xbmcvfs.translatePath('special://masterprofile/autoexec.py')
+    path = xbmcvfs.translatePath('special://userdata/autoexec.py')
     content = (
         'import xbmc\n'
-        'xbmc.sleep(2000)\n'
+        'xbmc.sleep(4000)\n'
         "xbmc.executebuiltin('RunAddon(plugin.video.sportshq)')\n"
     )
     try:
