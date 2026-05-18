@@ -166,8 +166,16 @@ def _resolve_embedsports(embed_url):
         from Crypto.Cipher import AES
         from Crypto.Util   import Counter
 
-    ctr        = Counter.new(128, initial_value=int.from_bytes(aes_iv, 'big'))
-    stream_url = AES.new(aes_key, AES.MODE_CTR, counter=ctr).decrypt(b64_data).decode('utf-8')
+    ctr       = Counter.new(128, initial_value=int.from_bytes(aes_iv, 'big'))
+    decrypted = AES.new(aes_key, AES.MODE_CTR, counter=ctr).decrypt(b64_data)
+    xbmc.log(f'[sportshq] embedsports raw bytes: {decrypted[:40]}', xbmc.LOGINFO)
+
+    # Try UTF-8 first, fall back to latin-1, strip null bytes
+    try:
+        stream_url = decrypted.decode('utf-8').strip('\x00')
+    except UnicodeDecodeError:
+        stream_url = decrypted.decode('latin-1').strip('\x00')
+
     xbmc.log(f'[sportshq] embedsports resolved: {stream_url[:80]}', xbmc.LOGINFO)
     return stream_url
 
