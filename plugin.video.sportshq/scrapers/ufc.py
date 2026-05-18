@@ -142,6 +142,14 @@ def _resolve_embedsports(embed_url):
         verify=False,
     )
 
+    xbmc.log(f'[sportshq] embedsports status={resp.status_code} headers={dict(resp.headers)} content[:20]={resp.content[:20]}', xbmc.LOGINFO)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f'embedsports.top returned HTTP {resp.status_code}')
+
+    if 'What' not in resp.headers:
+        raise RuntimeError(f'embedsports.top missing What header. Headers: {list(resp.headers.keys())}')
+
     b64_len      = resp.content[1]
     b64_cipher   = resp.content[-b64_len:]
     b64_decipher = bytes(x - 47 if x >= 0x50 else x + 47 for x in b64_cipher)
