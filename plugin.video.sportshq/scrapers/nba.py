@@ -58,10 +58,10 @@ def list_events(handle, base_url, sport_thumb='', fanart=''):
 
     if not results:
         xbmcgui.Dialog().notification(
-            'Sports HQ', 'No live NBA games right now',
-            xbmcgui.NOTIFICATION_INFO, 4000
+            'Sports HQ', 'No live NBA games right now — install pytz from Sniper Repo if this keeps happening',
+            xbmcgui.NOTIFICATION_INFO, 5000
         )
-        xbmcplugin.endOfDirectory(handle, succeeded=False)
+        xbmcplugin.endOfDirectory(handle)
         return
 
     xbmcplugin.setContent(handle, 'videos')
