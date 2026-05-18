@@ -154,7 +154,8 @@ def _resolve_embedsports(embed_url):
     b64_len      = resp.content[1]
     b64_cipher   = resp.content[-b64_len:]
     b64_decipher = bytes(x - 47 if x >= 0x50 else x + 47 for x in b64_cipher)
-    b64_data     = base64.b64decode(b64_decipher)
+    b64_padded   = b64_decipher + b'=' * (4 - len(b64_decipher) % 4)
+    b64_data     = base64.b64decode(b64_padded)
     aes_key      = aes_key_raw.encode('utf-8')
     aes_iv       = b'STOPSTOPSTOPSTOP'
 
