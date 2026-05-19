@@ -626,7 +626,9 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
         if sport_type == 'fta':
             # FTA: use executebuiltin PlayMedia — works from WindowXML
-            # Strip pipe headers for PlayMedia (Kodi handles them inline)
+            # Akamai CDN requires a browser User-Agent; inject it if not already present
+            if '|' not in play_url:
+                play_url = f'{play_url}|{urllib.parse.urlencode({"User-Agent": _UA})}'
             xbmc.executebuiltin(f'PlayMedia({play_url})')
             return
 
