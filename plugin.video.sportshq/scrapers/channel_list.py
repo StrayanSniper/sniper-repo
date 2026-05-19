@@ -125,7 +125,7 @@ _IPTV_ORG_AU = 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/a
 
 
 def _parse_m3u8(text):
-    """Parse iptv-org M3U8 into list of {name, logo, url} dicts."""
+    """Parse iptv-org M3U8 into list of {name, logo, url, headers} dicts."""
     channels = []
     lines    = text.splitlines()
     i = 0
@@ -136,12 +136,40 @@ def _parse_m3u8(text):
             logo_m = re.search(r'tvg-logo="([^"]*)"', line)
             name   = name_m.group(1).strip() if name_m else ''
             logo   = logo_m.group(1) if logo_m else ''
-            # Next non-comment line is the URL
+            # Strip geo-blocked markers from name
+            name   = re.sub(r'\s*\(Geo-?[Bb]locked\)\s*', '', name).strip()
+            # Collect KODIPROP lines and find URL
+            props  = {}
             j = i + 1
-            while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
-                j += 1
-            if j < len(lines) and lines[j].strip().startswith('http'):
-                channels.append({'name': name, 'logo': logo, 'url': lines[j].strip()})
+            while j < len(lines):
+                l = lines[j].strip()
+                if not l:
+                    j += 1
+                    continue
+                if l.startswith('#KODIPROP:'):
+                    kv = l[len('#KODIPROP:'):]
+                    if '=' in kv:
+                        k, v = kv.split('=', 1)
+                        props[k.strip()] = v.strip()
+                    j += 1
+                elif l.startswith('#'):
+                    break  # new directive
+                elif l.startswith('http'):
+                    # Extract pipe-headers from URL if present
+                    if '|' in l:
+                        url_part, hdr_part = l.split('|', 1)
+                    else:
+                        url_part, hdr_part = l, ''
+                    # Merge KODIPROP stream_headers with URL headers
+                    extra = props.get('inputstream.adaptive.stream_headers', '') or \
+                            props.get('inputstream.ffmpegdirect.stream_headers', '')
+                    merged = '&'.join(filter(None, [hdr_part, extra]))
+                    full_url = f'{url_part}|{merged}' if merged else url_part
+                    channels.append({'name': name, 'logo': logo, 'url': full_url})
+                    j += 1
+                    break
+                else:
+                    j += 1
             i = j
         else:
             i += 1
@@ -594,12 +622,18 @@ class ChannelListWindow(xbmcgui.WindowXML):
     def _play_url(self, channel, play_url):
         li = xbmcgui.ListItem(channel.get('name', ''), path=play_url)
         li.setArt({'icon': channel['logo']})
-        li.setMimeType('application/vnd.apple.mpegurl')
         li.setContentLookup(False)
-        li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
-        li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
-        li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
-        li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
+
+        if channel.get('sport_type') == 'fta':
+            # FTA: let Kodi auto-select inputstream based on URL/MIME
+            li.setMimeType('application/vnd.apple.mpegurl')
+        else:
+            li.setMimeType('application/vnd.apple.mpegurl')
+            li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
+            li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
+            li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
+            li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
+
         xbmc.Player().play(play_url, li)
 
 
