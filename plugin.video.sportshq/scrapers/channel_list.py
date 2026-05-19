@@ -2,10 +2,11 @@
 scrapers/channel_list.py — TV Channel List for Sports HQ
 
 Channel slots:
+   1-29 : FTA (9Now, 7Plus, Channel 10 via iptv-org)
   30-40 : Rugby (rugbybox.me via casthill/boanki proxy)
-  41-50 : UFC   (mmastream.me + others via iframe→m3u8)
-  51-60 : Boxing (boxingbox.net + others via iframe→m3u8)
-  61-70 : NBA   (crackstreams.ms + others via iframe→m3u8)
+  41-50 : UFC   (mmastream.me via iframe→m3u8)
+  51-60 : Boxing (boxingbox.net via iframe→m3u8)
+  61-70 : NBA   (crackstreams.ms + RoxieStreams via iframe→m3u8)
 """
 
 import os
@@ -98,6 +99,84 @@ def _http_get(url, referer=''):
         return _req.get(url, headers=h, timeout=12, verify=False).text
     except Exception:
         return ''
+
+
+# ---------------------------------------------------------------------------
+# FTA channels (slots 1-29) via iptv-org Australian M3U8
+# ---------------------------------------------------------------------------
+
+# Slot → (display_name, search_terms_lowercase)
+_FTA_SLOT_MAP = [
+    (1,  'Channel 9',    ['9network', 'channel 9', 'nine network', 'nine au', '9 network']),
+    (2,  '9Gem',         ['9gem', '9 gem']),
+    (3,  '9Life',        ['9life', '9 life']),
+    (4,  '9Rush',        ['9rush', 'rush', '9now']),
+    (11, 'Channel 7',    ['7network', 'channel 7', 'seven network', 'seven au', '7 network']),
+    (12, '7TWO',         ['7two', '7 two', 'seventwo']),
+    (13, '7mate',        ['7mate', '7 mate']),
+    (14, '7flix',        ['7flix', '7 flix', 'sevenflix']),
+    (21, 'Channel 10',   ['network 10', 'channel 10', '10 network', '10au', 'ten network', '10play']),
+    (22, '10 Bold',      ['10bold', '10 bold', 'ten bold']),
+    (23, '10 Peach',     ['10peach', '10 peach', 'ten peach']),
+    (24, '10 Shake',     ['10shake', '10 shake']),
+]
+
+_IPTV_ORG_AU = 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/au.m3u'
+
+
+def _parse_m3u8(text):
+    """Parse iptv-org M3U8 into list of {name, logo, url} dicts."""
+    channels = []
+    lines    = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('#EXTINF'):
+            name_m = re.search(r',(.+)$', line)
+            logo_m = re.search(r'tvg-logo="([^"]*)"', line)
+            name   = name_m.group(1).strip() if name_m else ''
+            logo   = logo_m.group(1) if logo_m else ''
+            # Next non-comment line is the URL
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].startswith('#')):
+                j += 1
+            if j < len(lines) and lines[j].strip().startswith('http'):
+                channels.append({'name': name, 'logo': logo, 'url': lines[j].strip()})
+            i = j
+        else:
+            i += 1
+    return channels
+
+
+def _get_fta_channels():
+    """Return dict of {slot: channel_dict} for FTA channels."""
+    try:
+        import requests as _req
+        resp = _req.get(_IPTV_ORG_AU, headers={'User-Agent': _UA}, timeout=15)
+        all_ch = _parse_m3u8(resp.text)
+    except Exception as exc:
+        xbmc.log(f'[channel_list] FTA fetch failed: {exc}', xbmc.LOGWARNING)
+        return {}
+
+    result = {}
+    for slot, display_name, terms in _FTA_SLOT_MAP:
+        for ch in all_ch:
+            name_lower = ch['name'].lower()
+            if any(t in name_lower for t in terms):
+                result[slot] = {
+                    'number':      slot,
+                    'name':        ch['name'],
+                    'logo':        ch['logo'] or _SPORT_LOGOS.get('rugby'),
+                    'sport_label': display_name,
+                    'url':         ch['url'],
+                    'play_url':    ch['url'],  # direct HLS — no extraction needed
+                    'status':      'live',
+                    'sport_type':  'fta',
+                    'source':      'iptv-org',
+                }
+                break
+
+    return result
 
 
 def _scrape_sport_site(listing_url, base_url, source_name, link_keywords):
@@ -215,6 +294,15 @@ def _build_channels():
     proxy_cache = _cache_read()
     now         = time.time()
 
+    # ── FTA slots 1-29 ─────────────────────────────────────────────────────
+    fta = _get_fta_channels()
+    for slot in range(1, 30):
+        if slot in fta:
+            channels.append(fta[slot])
+        else:
+            # Leave unmapped slots empty (no Off Air placeholder for FTA)
+            pass
+
     # ── Rugby slots 30-40 ──────────────────────────────────────────────────
     rugby_streams = _stream_list_load() or _get_all_sections()
     if rugby_streams:
@@ -329,7 +417,8 @@ def _make_list_item(channel):
 def _preextract_channel(channel):
     url        = channel.get('url')
     sport_type = channel.get('sport_type', 'rugby')
-    if not url or channel['status'] == 'live':
+    # FTA channels are direct HLS — no extraction needed
+    if not url or channel['status'] == 'live' or sport_type == 'fta':
         return
 
     if sport_type == 'rugby':
@@ -423,6 +512,11 @@ class ChannelListWindow(xbmcgui.WindowXML):
             return
 
         play_url = channel.get('play_url')
+
+        # FTA channels: direct play
+        if sport_type == 'fta' and play_url:
+            self._play_url(channel, play_url)
+            return
 
         # Fast play if already extracted
         if play_url and ('127.0.0.1' in play_url or '.m3u8' in play_url):
