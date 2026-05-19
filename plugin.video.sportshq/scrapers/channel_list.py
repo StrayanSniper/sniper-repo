@@ -140,6 +140,12 @@ _FTA_SLOT_MAP = [
 _MJH_URL = 'https://i.mjh.nz/au/Sydney/tv.json.gz'
 
 
+def _fta_logo(slug):
+    """Return local logo path for an FTA channel, derived from its mjh slug."""
+    name = slug.replace('mjh-', '').replace('-', '_') + '.png'
+    return _img(f'fta_{name}')
+
+
 def _mjh_pipe_headers(headers_dict):
     """Convert mjh.nz headers dict to Kodi pipe-header string."""
     parts = []
@@ -172,13 +178,14 @@ def _get_fta_channels():
         if not ch:
             xbmc.log(f'[channel_list] MJH slug not found: {slug}', xbmc.LOGWARNING)
             continue
-        pipe_hdrs = _mjh_pipe_headers(ch.get('headers', {}))
-        mjh_url   = ch['mjh_master']
-        play_url  = f'{mjh_url}|{pipe_hdrs}' if pipe_hdrs else mjh_url
+        pipe_hdrs  = _mjh_pipe_headers(ch.get('headers', {}))
+        mjh_url    = ch['mjh_master']
+        play_url   = f'{mjh_url}|{pipe_hdrs}' if pipe_hdrs else mjh_url
+        local_logo = _fta_logo(slug)
         result[slot] = {
             'number':      slot,
             'name':        ch.get('name', display_name),
-            'logo':        ch.get('logo', ''),
+            'logo':        local_logo,
             'sport_label': display_name,
             'url':         mjh_url,
             'play_url':    play_url,
