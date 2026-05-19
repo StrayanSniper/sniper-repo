@@ -539,7 +539,8 @@ class ChannelListWindow(xbmcgui.WindowXML):
             xbmcgui.Dialog().notification('Sports HQ', 'Off Air', xbmcgui.NOTIFICATION_INFO, 2000)
             return
 
-        play_url = channel.get('play_url')
+        play_url   = channel.get('play_url')
+        sport_type = channel.get('sport_type', 'rugby')
 
         # FTA channels: direct play
         if sport_type == 'fta' and play_url:
