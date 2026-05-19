@@ -620,20 +620,23 @@ class ChannelListWindow(xbmcgui.WindowXML):
         self._play_url(channel, result[0])
 
     def _play_url(self, channel, play_url):
+        sport_type = channel.get('sport_type', 'rugby')
+        xbmc.log(f'[channel_list] _play_url sport={sport_type} url={play_url[:80]}', xbmc.LOGINFO)
+
+        if sport_type == 'fta':
+            # FTA: use executebuiltin PlayMedia — works from WindowXML
+            # Strip pipe headers for PlayMedia (Kodi handles them inline)
+            xbmc.executebuiltin(f'PlayMedia({play_url})')
+            return
+
         li = xbmcgui.ListItem(channel.get('name', ''), path=play_url)
         li.setArt({'icon': channel['logo']})
+        li.setMimeType('application/vnd.apple.mpegurl')
         li.setContentLookup(False)
-
-        if channel.get('sport_type') == 'fta':
-            # FTA: let Kodi auto-select inputstream based on URL/MIME
-            li.setMimeType('application/vnd.apple.mpegurl')
-        else:
-            li.setMimeType('application/vnd.apple.mpegurl')
-            li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
-            li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
-            li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
-            li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
-
+        li.setProperty('inputstream',                               'inputstream.ffmpegdirect')
+        li.setProperty('inputstream.ffmpegdirect.manifest_type',    'hls')
+        li.setProperty('inputstream.ffmpegdirect.is_realtime_stream', 'true')
+        li.setProperty('inputstream.ffmpegdirect.open_timeout',     '15')
         xbmc.Player().play(play_url, li)
 
 
