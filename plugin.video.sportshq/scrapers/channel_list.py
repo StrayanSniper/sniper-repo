@@ -2,13 +2,15 @@
 scrapers/channel_list.py — TV Channel List for Sports HQ
 
 Channel slots:
-   1-29 : FTA (9Now, 7Plus, Channel 10 via iptv-org)
+   1-29 : FTA (Nine, Seven, ABC, Ten, SBS via mjh.nz)
   30-40 : Rugby (rugbybox.me via casthill/boanki proxy)
   41-50 : UFC   (mmastream.me via iframe→m3u8)
   51-60 : Boxing (boxingbox.net via iframe→m3u8)
   61-70 : NBA   (crackstreams.ms + RoxieStreams via iframe→m3u8)
 """
 
+import gzip
+import json
 import os
 import re
 import sys
@@ -102,107 +104,81 @@ def _http_get(url, referer=''):
 
 
 # ---------------------------------------------------------------------------
-# FTA channels (slots 1-29) via iptv-org Australian M3U8
+# FTA channels (slots 1-29) via mjh.nz — handles Akamai token refresh
 # ---------------------------------------------------------------------------
 
-# Slot → (display_name, search_terms_lowercase)
+# Slot → (display_name, mjh_slug)
+# Slugs are region-specific (Sydney); mjh.nz handles token auth transparently
 _FTA_SLOT_MAP = [
-    (1,  'Channel 9',    ['9network', 'channel 9', 'nine network', 'nine au', '9 network']),
-    (2,  '9Gem',         ['9gem', '9 gem']),
-    (3,  '9Life',        ['9life', '9 life']),
-    (4,  '9Rush',        ['9rush', 'rush', '9now']),
-    (11, 'Channel 7',    ['7network', 'channel 7', 'seven network', 'seven au', '7 network']),
-    (12, '7TWO',         ['7two', '7 two', 'seventwo']),
-    (13, '7mate',        ['7mate', '7 mate']),
-    (14, '7flix',        ['7flix', '7 flix', 'sevenflix']),
-    (21, 'Channel 10',   ['network 10', 'channel 10', '10 network', '10au', 'ten network', '10play']),
-    (22, '10 Bold',      ['10bold', '10 bold', 'ten bold']),
-    (23, '10 Peach',     ['10peach', '10 peach', 'ten peach']),
-    (24, '10 Shake',     ['10shake', '10 shake']),
+    (1,  'Channel 9',   'mjh-channel-9-nsw'),
+    (2,  '9Gem',        'mjh-gem-nsw'),
+    (3,  '9Life',       'mjh-life-nsw'),
+    (4,  '9Go!',        'mjh-go-nsw'),
+    (5,  '9Rush',       'mjh-rush-nsw'),
+    (11, 'Channel 7',   'mjh-seven-syd'),
+    (12, '7TWO',        'mjh-7two-syd'),
+    (13, '7mate',       'mjh-7mate-syd'),
+    (14, '7flix',       'mjh-7flix-syd'),
+    (21, 'ABC TV',      'mjh-abc-nsw'),
+    (22, 'ABC Family',  'mjh-abc-tv-plus'),
+    (23, 'ABC NEWS',    'mjh-abc-news'),
+    (24, 'Channel 10',  'mjh-10-nsw'),
+    (25, '10 Drama',    'mjh-10bold-nsw'),
+    (26, '10 Comedy',   'mjh-10peach-nsw'),
+    (27, 'SBS',         'mjh-sbs-sbst'),
+    (28, 'SBS Food',    'mjh-sbs-3syd'),
+    (29, 'NITV',        'mjh-sbs-5nsw'),
 ]
 
-_IPTV_ORG_AU = 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/au.m3u'
+_MJH_URL = 'https://i.mjh.nz/au/Sydney/tv.json.gz'
 
 
-def _parse_m3u8(text):
-    """Parse iptv-org M3U8 into list of {name, logo, url, headers} dicts."""
-    channels = []
-    lines    = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith('#EXTINF'):
-            name_m = re.search(r',(.+)$', line)
-            logo_m = re.search(r'tvg-logo="([^"]*)"', line)
-            name   = name_m.group(1).strip() if name_m else ''
-            logo   = logo_m.group(1) if logo_m else ''
-            # Strip geo-blocked markers from name
-            name   = re.sub(r'\s*\(Geo-?[Bb]locked\)\s*', '', name).strip()
-            # Collect KODIPROP lines and find URL
-            props  = {}
-            j = i + 1
-            while j < len(lines):
-                l = lines[j].strip()
-                if not l:
-                    j += 1
-                    continue
-                if l.startswith('#KODIPROP:'):
-                    kv = l[len('#KODIPROP:'):]
-                    if '=' in kv:
-                        k, v = kv.split('=', 1)
-                        props[k.strip()] = v.strip()
-                    j += 1
-                elif l.startswith('#'):
-                    break  # new directive
-                elif l.startswith('http'):
-                    # Extract pipe-headers from URL if present
-                    if '|' in l:
-                        url_part, hdr_part = l.split('|', 1)
-                    else:
-                        url_part, hdr_part = l, ''
-                    # Merge KODIPROP stream_headers with URL headers
-                    extra = props.get('inputstream.adaptive.stream_headers', '') or \
-                            props.get('inputstream.ffmpegdirect.stream_headers', '')
-                    merged = '&'.join(filter(None, [hdr_part, extra]))
-                    full_url = f'{url_part}|{merged}' if merged else url_part
-                    channels.append({'name': name, 'logo': logo, 'url': full_url})
-                    j += 1
-                    break
-                else:
-                    j += 1
-            i = j
-        else:
-            i += 1
-    return channels
+def _mjh_pipe_headers(headers_dict):
+    """Convert mjh.nz headers dict to Kodi pipe-header string."""
+    parts = []
+    for k, v in (headers_dict or {}).items():
+        if not v or not str(v).strip():
+            continue
+        kl = k.lower()
+        if kl == 'seekable':
+            parts.append(f'seekable={v}')
+        elif kl == 'user-agent':
+            parts.append(f'User-Agent={urllib.parse.quote(str(v), safe="")}')
+        elif kl == 'referer':
+            parts.append(f'Referer={urllib.parse.quote(str(v), safe="")}')
+    return '&'.join(parts)
 
 
 def _get_fta_channels():
-    """Return dict of {slot: channel_dict} for FTA channels."""
+    """Return dict of {slot: channel_dict} for FTA channels via mjh.nz."""
     try:
         import requests as _req
-        resp = _req.get(_IPTV_ORG_AU, headers={'User-Agent': _UA}, timeout=15)
-        all_ch = _parse_m3u8(resp.text)
+        resp = _req.get(_MJH_URL, headers={'User-Agent': _UA}, timeout=15)
+        data = json.loads(gzip.decompress(resp.content))
     except Exception as exc:
-        xbmc.log(f'[channel_list] FTA fetch failed: {exc}', xbmc.LOGWARNING)
+        xbmc.log(f'[channel_list] MJH fetch failed: {exc}', xbmc.LOGWARNING)
         return {}
 
     result = {}
-    for slot, display_name, terms in _FTA_SLOT_MAP:
-        for ch in all_ch:
-            name_lower = ch['name'].lower()
-            if any(t in name_lower for t in terms):
-                result[slot] = {
-                    'number':      slot,
-                    'name':        ch['name'],
-                    'logo':        ch['logo'] or _SPORT_LOGOS.get('rugby'),
-                    'sport_label': display_name,
-                    'url':         ch['url'],
-                    'play_url':    ch['url'],  # direct HLS — no extraction needed
-                    'status':      'live',
-                    'sport_type':  'fta',
-                    'source':      'iptv-org',
-                }
-                break
+    for slot, display_name, slug in _FTA_SLOT_MAP:
+        ch = data.get(slug)
+        if not ch:
+            xbmc.log(f'[channel_list] MJH slug not found: {slug}', xbmc.LOGWARNING)
+            continue
+        pipe_hdrs = _mjh_pipe_headers(ch.get('headers', {}))
+        mjh_url   = ch['mjh_master']
+        play_url  = f'{mjh_url}|{pipe_hdrs}' if pipe_hdrs else mjh_url
+        result[slot] = {
+            'number':      slot,
+            'name':        ch.get('name', display_name),
+            'logo':        ch.get('logo', ''),
+            'sport_label': display_name,
+            'url':         mjh_url,
+            'play_url':    play_url,
+            'status':      'live',
+            'sport_type':  'fta',
+            'source':      'mjh.nz',
+        }
 
     return result
 
@@ -626,9 +602,7 @@ class ChannelListWindow(xbmcgui.WindowXML):
 
         if sport_type == 'fta':
             # FTA: use executebuiltin PlayMedia — works from WindowXML
-            # Akamai CDN requires a browser User-Agent; inject it if not already present
-            if '|' not in play_url:
-                play_url = f'{play_url}|{urllib.parse.urlencode({"User-Agent": _UA})}'
+            # mjh.nz URLs already include the correct AppleTV User-Agent in pipe headers
             xbmc.executebuiltin(f'PlayMedia({play_url})')
             return
 
