@@ -34,7 +34,7 @@ UA = (
 
 PLAYLIST_TTL      = 2.0
 PREFETCH_COUNT    = 6
-SESSION_REFRESH_S = 270
+SESSION_REFRESH_S = 210   # Refresh 60s before ~270s CDN token expiry — keeps old token valid during pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,7 @@ class _ProxySession:
         self._playlist_lock  = threading.Lock()
         self._seg_cache      = {}
         self._seg_cache_lock = threading.Lock()
+        self._refresh_lock   = threading.Lock()   # prevent concurrent refresh runs
 
     # -- CDN playlist -------------------------------------------------------
 
@@ -100,7 +101,19 @@ class _ProxySession:
                 else:
                     break
             time.sleep(0.5)
-        return self.cdn_session.get(url, timeout=30).content
+        # Direct fetch with retry — handles brief CDN hiccups without stalling Kodi
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = self.cdn_session.get(url, timeout=30)
+                if resp.status_code == 200:
+                    return resp.content
+                last_exc = RuntimeError(f'HTTP {resp.status_code}')
+            except Exception as exc:
+                last_exc = exc
+            if attempt < 2:
+                time.sleep(1)
+        raise last_exc or RuntimeError(f'segment fetch failed: {url}')
 
     def trigger_prefetch(self, current_url: str):
         try:
@@ -158,20 +171,37 @@ class _ProxySession:
             self.proxy_server = None
 
     def refresh(self):
-        """Re-run pipeline and update this session's CDN credentials."""
+        """
+        Re-run pipeline without touching current serving state until the new
+        session is fully verified — zero-gap swap so Kodi never stalls.
+        """
         if not self.match_url:
             return
+        if not self._refresh_lock.acquire(blocking=False):
+            return  # already refreshing
         try:
+            print('[extractor] Refreshing session (old token still live)...', file=sys.stderr, flush=True)
+            # Build new session entirely in isolation
             new_sess, media_url = _run_pipeline(self.match_url)
+            new_base = _base_of(media_url)
+            # Verify new CDN URL actually responds before committing
+            test = new_sess.get(media_url, timeout=10)
+            if test.status_code != 200:
+                raise RuntimeError(f'new CDN returned HTTP {test.status_code}')
+            # Atomic swap — old session keeps serving right up until this point
             self.cdn_session   = new_sess
             self.cdn_media_url = media_url
-            self.cdn_base      = _base_of(media_url)
+            self.cdn_base      = new_base
             self.invalidate_playlist()
             with self._seg_cache_lock:
                 self._seg_cache.clear()
-            print('[extractor] Session refreshed OK', file=sys.stderr, flush=True)
+            # Warm the cache immediately so next segment requests hit prefetch
+            threading.Thread(target=self.prefetch_initial, daemon=True).start()
+            print('[extractor] Session refreshed OK — seamless swap complete', file=sys.stderr, flush=True)
         except Exception as exc:
-            print(f'[extractor] Session refresh failed: {exc}', file=sys.stderr, flush=True)
+            print(f'[extractor] Session refresh failed — keeping old session alive: {exc}', file=sys.stderr, flush=True)
+        finally:
+            self._refresh_lock.release()
 
     def start_refresh_loop(self):
         def _loop():
