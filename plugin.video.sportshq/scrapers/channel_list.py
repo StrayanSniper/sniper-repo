@@ -137,7 +137,17 @@ _FTA_SLOT_MAP = [
     (29, 'NITV',        'mjh-sbs-5nsw'),
 ]
 
-_MJH_URL = 'https://i.mjh.nz/au/Sydney/tv.json.gz'
+_MJH_URL   = 'https://i.mjh.nz/au/Sydney/tv.json.gz'
+_NZAU_URL  = 'https://i.mjh.nz/nzau/tv.json.gz'
+_NZAU_START_SLOT = 71
+
+# Slugs already mapped in slots 1-29 — exclude from nzau extended list
+_FTA_SLUGS_USED = {slug for _, _, slug in _FTA_SLOT_MAP}
+
+# Radio channels to skip (audio only, won't work in video player)
+_SKIP_NZAU_SLUGS = {
+    'mjh-sbs-sbs-radio-1', 'mjh-sbs-sbs-radio-2', 'mjh-sbs-sbs-radio-3',
+}
 
 
 def _fta_logo(slug):
@@ -194,6 +204,49 @@ def _get_fta_channels():
             'source':      'mjh.nz',
         }
 
+    return result
+
+
+def _get_nzau_channels():
+    """
+    Fetch all nzau channels from mjh.nz and assign to slots 71+.
+    Excludes slugs already mapped in slots 1-29 and skips radio-only channels.
+    """
+    try:
+        import requests as _req
+        resp = _req.get(_NZAU_URL, headers={'User-Agent': _UA}, timeout=15)
+        data = json.loads(gzip.decompress(resp.content))
+    except Exception as exc:
+        xbmc.log(f'[channel_list] nzau fetch failed: {exc}', xbmc.LOGWARNING)
+        return {}
+
+    result = {}
+    slot = _NZAU_START_SLOT
+    seen_urls = set()
+    for slug, ch in sorted(data.items(), key=lambda x: x[1].get('name', '').lower()):
+        if slug in _FTA_SLUGS_USED or slug in _SKIP_NZAU_SLUGS:
+            continue
+        mjh_url = ch.get('mjh_master', '')
+        if not mjh_url or mjh_url in seen_urls:
+            continue
+        seen_urls.add(mjh_url)
+        pipe_hdrs = _mjh_pipe_headers(ch.get('headers', {}))
+        play_url  = f'{mjh_url}|{pipe_hdrs}' if pipe_hdrs else mjh_url
+        net       = ch.get('network', 'TV') or 'TV'
+        result[slot] = {
+            'number':      slot,
+            'name':        ch.get('name', slug),
+            'logo':        ch.get('logo', ''),
+            'sport_label': net,
+            'url':         mjh_url,
+            'play_url':    play_url,
+            'status':      'live',
+            'sport_type':  'fta',
+            'source':      'mjh.nz',
+        }
+        slot += 1
+
+    xbmc.log(f'[channel_list] nzau loaded {len(result)} extended channels', xbmc.LOGINFO)
     return result
 
 
@@ -363,6 +416,11 @@ def _build_channels():
     # ── NBA slots 61-70 ────────────────────────────────────────────────────
     _add_sport_slots(channels, _get_nba_streams(), SLOT_RANGES['nba'],
                      _SPORT_LOGOS['nba'], 'NBA', proxy_cache, now)
+
+    # ── Extended TV channels 71+ (mjh.nz nzau — AU/NZ FAST channels) ───────
+    nzau = _get_nzau_channels()
+    for slot in sorted(nzau.keys()):
+        channels.append(nzau[slot])
 
     return channels
 
