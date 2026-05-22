@@ -615,9 +615,26 @@ class ChannelListWindow(xbmcgui.WindowXML):
         xbmc.log(f'[channel_list] _play_url sport={sport_type} url={play_url[:80]}', xbmc.LOGINFO)
 
         if sport_type == 'fta':
-            # FTA: use executebuiltin PlayMedia — works from WindowXML
-            # mjh.nz URLs already include the correct AppleTV User-Agent in pipe headers
-            xbmc.executebuiltin(f'PlayMedia({play_url})')
+            # Split pipe headers — extract HTTP headers for ffmpegdirect, drop Kodi-only directives
+            if '|' in play_url:
+                url_part, hdr_str = play_url.split('|', 1)
+                # Keep only real HTTP headers (skip seekable=0 etc.)
+                http_hdrs = '&'.join(
+                    p for p in hdr_str.split('&')
+                    if '=' in p and p.split('=', 1)[0].lower() not in ('seekable',)
+                )
+            else:
+                url_part, http_hdrs = play_url, ''
+            li = xbmcgui.ListItem(channel.get('name', ''), path=url_part)
+            li.setMimeType('application/vnd.apple.mpegurl')
+            li.setContentLookup(False)
+            li.setProperty('inputstream',                                'inputstream.ffmpegdirect')
+            li.setProperty('inputstream.ffmpegdirect.manifest_type',     'hls')
+            li.setProperty('inputstream.ffmpegdirect.is_realtime_stream','true')
+            li.setProperty('inputstream.ffmpegdirect.open_timeout',      '10')
+            if http_hdrs:
+                li.setProperty('inputstream.ffmpegdirect.stream_headers', http_hdrs)
+            xbmc.Player().play(url_part, li)
             return
 
         li = xbmcgui.ListItem(channel.get('name', ''), path=play_url)
