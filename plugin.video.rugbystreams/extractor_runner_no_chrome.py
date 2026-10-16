@@ -281,7 +281,8 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not key_url:
                 self.send_response(400); self.end_headers(); return
             try:
-                data = sess.cdn_session.get(urllib.parse.unquote(key_url), timeout=10).content
+                # parse_qs already decoded it — a second unquote corrupts signed URLs
+                data = sess.cdn_session.get(key_url, timeout=10).content
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
                 self.send_header('Content-Length', str(len(data)))
@@ -295,7 +296,7 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not seg_url:
                 self.send_response(400); self.end_headers(); return
             try:
-                actual = urllib.parse.unquote(seg_url)
+                actual = seg_url
                 data   = sess.get_seg(actual)
                 self.send_response(200)
                 self.send_header('Content-Type', 'video/mp2t')
